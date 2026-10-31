@@ -188,6 +188,15 @@ filter as a tight constraint (variance $10^{-6}$ cycles²), so the next step sta
 the previous one already sharpened. Triple-frequency is the normal case between Unicore or
 Septentrio bases. F9P baselines are dual-frequency and start at the wide lane.
 
+That constraint has a cost, and it is still open. When a later combination's integer follows from
+earlier fixes, the constraint fixes it too. For example, the L1-L5 wide lane is the L1-L2 wide
+lane plus the L2-L5 extra-wide lane. Its float then sits on an integer before it is tested: such
+steps read exactly 0.000 cycles at the moment of rounding. Their ratio test has nothing left to
+check, so a wrong earlier fix goes through unchallenged and propagates: one wrong wide-lane cycle
+forces a 4-5 cycle narrow-lane error (§9.7). The cascade is therefore only as reliable as its
+first fixes, which is why the L1-L2 wide lane, fixed from the UM980's degraded L2 code, matters
+so much (§9.8).
+
 Over the integer candidates, the search is LAMBDA (MLAMBDA). Validation is the ratio test:
 second-best over best squared norm, at least 3. When the test fails, the worst-conditioned
 ambiguity is dropped and the subset retried (partial resolution, minimum 2 fixed). Satellites
@@ -222,6 +231,17 @@ the arc (at least 120 epochs). It is accepted only when:
 **As shipped, this step does not fire.** The 2 cm floor over a 10.7 cm narrow lane is
 0.19 cycles, above the 0.08 gate. In practice the network fixes **wide lanes only**, and each
 auxiliary's ionosphere takes its level from code. That has consequences (§5.3).
+
+The floor was raised from 0.5 cm to 2 cm because dividing the whole sigma by $\sqrt n$ claimed a
+precision the float does not have: residual troposphere is correlated over minutes, and the
+optimism put 1.66 % of integers a cycle out. With the 0.5 cm floor the step did fire. It cut
+network misclosure from 0.78 % to 0.01 % at 30 km, yet took the rover from 98.4 % fixed to 13.2 %
+(§9.10). Every gain measured afterwards with `--if-narrow-lane` came from what the flag also
+does: it **skips** the raw-carrier narrow lane, which cannot work at these distances (§9.10).
+Opening the gate instead (to 0.25 cycles) accepts *every* attempted narrow lane, wrong integers
+included: 2 244 506 of 2 244 506 below 30 km. Taking the ionosphere from those integers then
+loses to the served recipe (3 wins, 21 losses). A phase-levelled ionosphere first needs a
+narrow-lane acceptance test that rejects wrong integers, and none exists yet.
 
 ### 3.4 Loop closure
 
@@ -576,6 +596,319 @@ uncorrected VBS beats a Mosaic nearest base.
   **trade**. Days are counted one by one, never pooled first, because pooling five days and then
   testing gives a different answer. A configuration also has to stay under 2 % harmful epochs,
   with no single harmful episode beyond about 120 s. Every envelope was set this way.
+
+---
+
+## 9. Decisions the measurements forced
+
+The choices below each needed real calculation, and each changed the results measurably. They
+are grouped by where they act, and every number comes from the engine's test record.
+
+### 9.1 The receiver clock enters the geometry: partial $1 - \dot\rho/c$
+
+An observation tagged at the nominal epoch $t$ was really taken at $t - \delta t_r$, so its range
+is $\rho(t - \delta t_r) \approx \rho - \dot\rho\,\delta t_r$. Two free-running receivers drift
+apart at about 7.4 µs/s, and one reset itself by exactly 0.9926 ms. A 1 ms step moves the
+single-difference geometry by $\dot\rho \times 1$ ms, up to ±0.8 m. It is the same on every band
+and different on every satellite, so no slip detector can see it.
+
+The filter already carries $c\,\delta t$ as its clock state. The geometry effect is that same
+state with an extra term:
+
+```math
+\frac{\partial z}{\partial (c\,\delta t)} = 1 - \frac{\dot\rho}{c}
+```
+
+with $\dot\rho$ including the Earth-rotation term. Drift and jumps are then absorbed by the
+ordinary update, with nothing to detect and no threshold to tune. On a 29 km baseline over a day,
+rejected phase observations fell from 34 653 to 1 359 (39 % → 0.76 %), and observations used rose
+from 144 961 to 178 255. Code: `vbs_netekf.c`, `hclk = 1.0 - rdot/CLIGHT`.
+
+### 9.2 The 25° output mask
+
+The corrections for low satellites carry the largest error, and that error grows with distance.
+A mask on the *synthesised* stream (not on the network, whose resolution mask stays at 20°)
+trades satellites for correction quality. Triple-band clusters deliver about 20 satellites per
+VBS epoch and can spare the low ones:
+
+| Case | 20° mask | 25° mask |
+|---|---|---|
+| 39 km cluster | 96.6 % fixed, 4.68 % false | 98.3 %, 0.30 % |
+| 15 km tile corner (10.6 km from the VBS) | 94.9 %, 7.03 % | 98.5 %, 0.52 % |
+| 57 km cluster | 52.8 % fixed | 76.0 % |
+
+The 13-fold cut in false fixes at the tile corner is what made a 15 km tile acceptable. Beyond
+60 km the mask no longer helps. Code: `out_elmask_deg = 25` in `vbs_session.c`.
+
+### 9.3 Band 6, and a cascade ordered by real wavelength
+
+The combination table is keyed on RINEX band digits, so one row is a different physical
+combination on each constellation. Ordered by row, BeiDou ran 0.78 m (B1I-B2a, sitting in an
+extra-wide-lane row), then 9.77 m, then 20.93 m (B1C-B1I): shortest first, the wrong way round.
+The cascade is now ordered by each combination's actual wavelength,
+$\lambda = c/|f_a - f_b|$.
+
+Galileo E6 and BeiDou B3 add extra-wide lanes with real frequency separation: E6-E5b 4.19 m,
+B3I-B2b 4.88 m, B2a-B3I 3.26 m, E5a-E6 2.93 m. They also add wide lanes of 0.98-1.02 m. B1C-B1I
+is a superb 20.93 m wide lane but only 14 MHz apart: its ionosphere separation,
+$\mu_a - \mu_b \approx 0.018$, makes any ionosphere-free use of it ill-conditioned.
+
+On a UM980 cluster, adding band 6 took the VBS from 66.0 % fixed, H95/V95 6.0/8.1 cm and 2.30 %
+false to 96.9 %, 4.6/5.4 cm and 0.00 %. Code: `vbs_ambres_cascade_order()`, asserted in
+`tests/test_ambres.c`.
+
+### 9.4 Why dual-band RTK is confidently wrong at 20-35 km
+
+A dual-band receiver's longest combination is about 0.86 m (L1-L2 0.862, E1-E5b 0.814, B1I-B2I
+0.847; GLONASS adds no extra-wide lane). As the differential ionosphere bias approaches half a
+wide-lane cycle, the float is still tight, but centred on the wrong integer. The ratio test
+passes, and the fix is confidently wrong. Further out the ratio test fails, and the fixes that
+survive are mostly right. The danger band is therefore about 20-35 km: a measured share of all
+epochs spent on a wrong fix of 58.9 % at 22.7 km and 28.8 % at 29.1 km, but 0.6 % at 36.9 km.
+
+Extra-wide lanes of 4-21 m keep the bias far from half a cycle, so a triple-band receiver
+degrades smoothly instead. At about 30 km of direct RTK:
+- dual-band F9P: 86.1 % fixed with 33.46 % false;
+- triple-band UM980: 86.3 % with 3.41 % false.
+
+That is the same availability with ten times the wrong fixes. A VBS cut the F9P's wrong epochs to
+4.3-5.5 %, against 28.8-37.1 % for direct RTK, which is why F9P clusters were studied rather than
+banned outright (§7.3 refuses them for being erratic).
+
+### 9.5 Which L2 column to read
+
+On a Mosaic, the first GPS L2 column is genuine semi-codeless P(Y), and reading its L2C instead
+cut harmful distance by 57 % (§7.4). On a UM980 the same switch does nothing: its 2W column
+already carries L2C. Measured directly, the UM980's 2W-2X *phase* differs by a median of -9 to
++4 mm, with 8-10 mm scatter on a 244 mm wavelength, while its *code* differs by -0.18 to +0.23 m.
+The filter works on phase, so the switch changes which column is read, not which signal.
+Code: `ENVELOPE[].prefer_l2c` in `vbs_policy.c`, `vbs_netekf_band_code()`.
+
+### 9.6 Testing whether a correction is right-sized, and why a variance gate cannot
+
+**Paired decomposition.** For a correction $c$ applied to a reference residual, on the same
+epochs:
+
+```math
+\mathrm{RMS}^2_\text{test} = \mathrm{RMS}^2_\text{ref} - 2\,\mathrm{cov}(\text{ref}, c) + \mathrm{var}(c),
+\qquad \alpha = \frac{\mathrm{cov}(\text{ref}, c)}{\mathrm{var}(c)}
+```
+
+$\alpha \approx 1$ means the correction is the right size, $\alpha \approx 0$ that it is noise,
+and $\alpha < 0$ that it is anti-correlated, which noise cannot produce.
+- The dispersive correction scored 0.87 (Galileo) and 0.93 (GPS) at 29 km.
+- The estimated non-dispersive residual scored -4.40 and -6.32, with correlation about -0.75.
+- The same analysis caught the troposphere model term being counted twice (interpolated, then
+  added again).
+
+Withholding the residual repaired a 150 km case: GPS ionosphere-free 6.16 → 4.96 cm, against a
+4.92 cm reference. That is why the estimated troposphere residual is not served (§4.2).
+
+**Wrong, or mis-scaled?** A correction off by a constant factor improves steadily as it is
+scaled towards the right value. A sweep from 0.85 to 1.50 on a mixed cluster left the vertical
+bias flat at -7.7 to -8.0 cm, with a non-monotone fix rate: the correction was wrong, not
+mis-scaled. On a UM980 cluster the harm was proportional to how much was applied:
+
+| Scale | Fixed | Blunders |
+|---|---|---|
+| 1.2 | 55.0 % | 27.67 % |
+| 1.0 | 54.7 % | 14.97 % |
+| 0.8 | 79.0 % | 0.00 % |
+| off | 98.0 % | 0.00 % |
+
+This is where the per-family recipes began.
+
+**A formal variance cannot buy integrity.** Gating corrections on the filter's own variance
+(0.05 → 0.025 → 0.012 m) kept the good-to-bad ratio unchanged: about 6 400 correct against 745
+wrong became 3 800 against 489. A formal variance measures the filter's confidence, not
+systematic error, and a correction poisoned by a wrong integer looks confident.
+
+### 9.7 Reading wrong fixes from their integer signatures
+
+A wide lane wrong by one cycle forces a wrong $N_1 - N_2$, which puts the narrow lane 4-5 L1
+cycles off. The data separated perfectly:
+- 6 590 narrow-lane errors of that size occurred with the wide lane also misclosed, and none
+  without;
+- 6 590 is about twice the 3 309 wrong wide-lane fixes;
+- 7 486 one-cycle narrow-lane errors occurred with the wide lane closed, and none with it open.
+
+With that propagation removed, the populations have the shape a real wrong-fix population must
+have: wide 2 994 : 315 : 0, narrow 7 486 : 26 : 0 (one, two, three or more cycles).
+
+Range and ionosphere errors also leave different per-band signatures. A double-difference range
+error $\delta\rho$ misplaces each band by $\delta\rho/\lambda_i$, while an ionosphere error
+misplaces it by $\mu_i\,\delta I/\lambda_i$:
+
+| Per metre of error | L1 | L2 | L5 |
+|---|---|---|---|
+| Range error ($1/\lambda_i$) | 5.25 | 4.10 | 3.93 |
+| Ionosphere error ($\mu_i/\lambda_i$) | 5.3 | 6.7 | 7.0 |
+
+Misclosures of 16, 13 and 13 cycles on L1, L2 and L5 matched a 3.1 m range error. The cause was
+band-common phase jumps of +55.6 m and then +155.7 m, 30 s apart. Geometry-free is blind to them,
+and Melbourne-Wübbena was silent during its warm-up. A fixed 5-cycle Melbourne-Wübbena test
+during warm-up, plus resetting a satellite whose phase is rejected 3 epochs running, cut
+extra-wide-lane failures from 235 to 73, and raised closure coverage from 78.6 % to 89.2 %.
+
+### 9.8 Measuring ambiguities at the moment of decision
+
+Reading the fractional part $|\hat a - \check a|$ of every float gives +0.000 ± 0.000 over
+5.86 million records. That is because an accepted fix is re-applied as a constraint at every
+later epoch. Keeping only the first fix of each run leaves 1 762 real decisions. At rounding:
+- UM980 GPS L1-L2 wide lane: mean 0.055-0.111 cycles, with 10-27 % of decisions within 0.05 of
+  the 0.25 tolerance;
+- Mosaic: 0.018-0.034;
+- every UM980 combination that avoids band 2: 0.000-0.004.
+
+The median is +0.000 everywhere, so the defect is dispersion, not a bias. It is confined to the
+one row built from the L1/L2 Melbourne-Wübbena combination, the only one the UM980's L2 *code*
+reaches. Dropping that row for GPS raised delivered usable epochs by 31 % and 49 % on two UM980
+geometries, and cost a Mosaic control 10 %. Because the cascade's later steps inherit this row
+through the constraint (§3.1), it is the one place where an L2 defect enters every integer.
+
+### 9.9 Tides, and the tide-system convention
+
+Interpolation removes most of a tide, because it is nearly common across a cluster:
+
+| Effect | Raw, at the bases | Residual reaching the rover |
+|---|---|---|
+| Solid-earth tide, 160 km cluster | 11.7 mm | 0.25 mm |
+| Pole tide | 0.34 mm | 0.01 mm |
+| Ocean loading, macrotidal coast, 150 km | ~40 mm amplitude | 0.9 mm median, 3.2 mm max |
+
+The ocean-loading residual is predicted by how complex the coastline is, not by the tidal range.
+
+The convention matters more than the effect. The 1005 message announces a conventional
+tide-free coordinate, while the synthesis works on the tide-displaced position. Mixing the two
+would bias every rover by the permanent tide, 2.4 cm at 43°N to 4.5 cm at 50°N. That bias is
+nearly constant in space, so no leave-one-out residual would ever show it. Code:
+`vbs_basemeta.c`, `tidedisp(..., TIDE_SOLID_ONLY, ...)`. The library's tide argument is a bit
+mask, so its "2" selects ocean loading alone.
+
+### 9.10 The narrow-lane redesign, and why it stopped at the wide lane
+
+The original cascade ended on raw carriers, which needs the slant ionosphere to a fraction of
+19-24 cm. It could not hold. On a 46-75 km cluster:
+- extra-wide lane: 0 of 59 350 misclosed by a cycle or more;
+- wide lane: none beyond 2.5 cycles;
+- raw-carrier narrow lane: 22 395 off by one cycle, 4 226 by two, 6 755 beyond 2.5.
+
+The ionosphere-free narrow lane (§3.3) removes the ionosphere from the model, but two things
+broke it at the rover:
+
+1. **Reading the ionosphere back from one epoch is too noisy.** The geometry-free read has error
+   ```math
+   \sigma_{GF} = \frac{2.83\,\sigma_\Phi}{\mu_2 - 1} \approx 2.6\ \text{cm},
+   ```
+   the size of the signal itself, and correlation with the true ionosphere fell from +0.80 to
+   +0.36. Once the integers are fixed and fed back, the filter's own smoothed state *is* the
+   geometry-free ionosphere, so no read-back is needed.
+2. **The ionosphere-free float depends on the troposphere**,
+   ```math
+   \hat N = \frac{\nabla\Delta\Phi_{IF} - \Delta m_w\,\mathrm{ZTD} - \text{(known wide-lane term)}}{\lambda_{NL}},
+   ```
+   so a ZTD error biases every float in an elevation-dependent way that loop closure cannot see
+   (it is common to the triangle). Network misclosure fell from 0.78 % to 0.01 % at 30 km, while
+   the rover went from 98.4 % fixed to 13.2 %, with 86 % of fixes false and a -12.6 cm vertical
+   bias.
+
+That pointed at the troposphere and led to the gradients (§2.2), which fixed the rover. In the
+same step the narrow-lane floor rose to 2 cm, and from then on the step never fired (§3.3). The
+working VBS therefore resolves wide lanes only.
+
+### 9.11 Precise orbits and Galileo HAS do not help
+
+Satellite clocks and biases cancel between receivers. The orbit error enters only the synthesis,
+as
+
+```math
+(\mathbf r_\text{SP3} - \mathbf r_\text{brdc}) \cdot (\mathbf e_M - \mathbf e_V) \sim |\delta\mathbf r|\,b/\rho .
+```
+
+Measured against final orbits:
+- Galileo and BeiDou: under 1 mm at every spacing;
+- GPS: 0.76 mm at 25-40 km, 3.83 mm at 140-160 km;
+- GLONASS: 2.1-10.5 mm, worst 95 mm, which HAS does not cover.
+
+Removing 4 mm from an 80 mm root-sum-square changes it by 0.1 mm, and ionosphere-free residuals
+were identical to 0.1 mm on all five days. Over 280 paired leave-one-out cases the rover gained
++0.12 points of fix rate (95 % CI -0.06 to +0.31), with a sign test of 141/130, p = 0.54. So
+`vbsd` takes no orbit-correction stream.
+
+### 9.12 GLONASS: in the network, never in the rover's ambiguity resolution
+
+GLONASS inter-channel biases cancel only between matching hardware (§6.2). Admitting GLONASS to
+the network improves every constellation's corrections: blunders fell from 8.86 % to 5.23 %.
+But a synthesised stream carries the *master's* hardware signature, not the rover's, and matching
+chip models across the bases does not make the rover the same unit. With GLONASS ambiguity
+resolution on at the rover, the fixes that survive are 0.00 % wrong against a real base and
+63.57 % wrong against a VBS. Rovers should keep GLONASS ambiguity resolution off behind a VBS.
+
+### 9.13 Coordinates must be consistent, not just accurate
+
+§5.3 shows that 7-9 mm of coordinate error changes integers. A partially applied coordinate set
+is worse than none: a cluster with some bases moved and others not is internally inconsistent by
+however far the two sources disagree. One envelope change was retracted for that reason. Two
+reference documents can be compared safely: their disagreement was almost all a common -5.25 mm
+vertical shift, which cancels, leaving a median of 1.8 mm horizontal and 3.4 mm vertical (p95
+5.0 / 11.1 mm).
+
+Across borders, frames differ in structured ways. One national frame sat at a constant 0.240 m
+horizontal translation, flat to 2 mm across latitude. Another's vertical offset grew northward
+from 13.8 to 19.9 cm, the signature of post-glacial uplift. Hence the rule that a cluster never
+mixes frames.
+
+### 9.14 The statistics of the method
+
+Several measurement traps decided results before any engine change did:
+
+- **Bias versus blunder.** A precise rover sitting 9.2 cm high counted as 32 % "false" under a
+  3D > 10 cm rule, on the pass-through arm too. So each run's per-component *median* offset is
+  removed before counting blunders. It is the median, because a mean is dragged by the blunders
+  it is meant to measure, and per run, never per window, because per-window centring would
+  subtract each window's wrong fix. The median breaks down above 50 % blunders, so a split above
+  a third is flagged unreliable. On one case, 30.63 % "false" became 13.11 % blunders plus a
+  6.4/5.0 cm bias.
+- **Choosing test days by the ionosphere, not by Kp.** A Kp 7 "storm" day and a "quiet" day had
+  the same double-differenced ionosphere (std 0.038 against 0.039 m). Days are now ranked by the
+  robust spread (MAD) of the *change* in double-differenced L1-L2 over a 5-minute lag:
+  - the change, not the level, because a cycle slip enters the level as a metre step;
+  - MAD, because injecting metre-scale slips on 5 % of epochs left it unchanged;
+  - a 5-minute lag, because adjacent 30 s epochs only measure carrier noise, amplified by
+    $1/(\mu_2 - 1) = 1.55$.
+
+  The old labels were inverted (storm 0.479, quiet 0.786 cm/min).
+- **Denominators.** Raising a code sigma gates more epochs out and flatters the arm under test.
+  Counting delivered usable epochs instead showed the default winning by two to three times.
+- **Per-day, never pooled.** Pooling five days before a dominance test turned a per-day 3-0-2
+  into a "trade". Each day is a test (§8).
+- **Confounded labels.** Test clusters were named by rover-to-master distance, but the network
+  resolves over master-to-auxiliary baselines, whose mean ran from 61.5 to 164.3 km. A factorial
+  grid (4 rover distances × 4 network sizes) separated the two. Read from the engine's own log,
+  results track master distance monotonically: 18.7 km 84.7 % on spec, 23.7 km 73.9 %,
+  36.5 km 59.6 %.
+- **No runtime predictor.** Before a stream opens, distance correlates r = 0.34 with harmful
+  share, worst L2 coverage -0.15, coordinate offset -0.06. A crippled station doubles the odds
+  of a breach (41 % against 20 %), but refusing on it would wrongly refuse 59 % of cases. The
+  rules stay a prior (§7.3).
+
+### 9.15 Auditing the inputs: GPS L2 coverage
+
+A station can declare L2 and fill it on only a few satellites. The useful statistic is GPS
+satellite-*records* with L2 over those with L1:
+- per epoch, a station sending L2 on 2 of 9 satellites reads 100 %;
+- per satellite, the ratio saturates (0.75-0.88 for healthy and broken stations alike);
+- the time window must be fixed, because one station read 11 % at 1 Hz and 42 % at 30 s until
+  the windows matched.
+
+Of 267 UM980s surveyed, 26 sat below 60 %, 25 of them in an 18.4-22.8 % band. They send L2 only
+for the satellites that have no L2C. The cause is firmware: two builds (11833 and 13504) declare
+an L2C column and never fill it, while build 17548 is healthy on 77 stations. The defective
+stations were inside 161 of 418 test cases, and every envelope that rested on them was
+re-measured. `vbs_pipeline` now warns below 60 %: broken stations sit below 23 %, healthy ones
+above 76 %.
+
+---
 
 ## References
 
