@@ -449,8 +449,82 @@ failure mode outside the envelope is a confident wrong fix, not a worse float. T
 - Mosaic-X5: 28-60 km;
 - never for all-F9P or mixed clusters.
 
+§7.4 explains why the two families differ.
+
 Nothing measured at run time predicts a wrong fix, so the decision is a prior, taken before a
 stream is opened.
+
+### 7.4 Why the two families have different envelopes
+
+| Family | Serve between | Ionosphere correction applied on |
+|---|---|---|
+| Unicore UM980 / UM982 | 13-40 km | Galileo, BeiDou |
+| Septentrio Mosaic-X5 | 28-60 km | every constellation |
+
+The two receivers are not of different quality. Homogeneous clusters of either family estimate
+the per-satellite ionosphere about equally cleanly:
+
+- the spread of each satellite's estimate about its baseline's common level is 2-16 cm for
+  UM980 clusters and 2-10 cm for Mosaic clusters, at 6-68 km;
+- a UM980 differenced against a Mosaic is worse than either: 12.7 cm at only 6 km, which is
+  why mixed clusters are refused.
+
+The two bounds have different causes.
+
+**The floor: what the correction adds against what it removes.** The true double-differenced
+ionosphere grows with distance: 1.4 cm at 25-40 km, 3.8 cm at 90-110 km (§1.3). The correction's
+own error does not shrink with distance. The network fixes wide lanes only (§3.3), so each
+satellite's ionosphere state takes its level from code. On some satellites that leaves a
+constant error of 15-55 cm, from code biases that do not cancel. Applying the correction pays
+only where
+
+```math
+\underbrace{\nabla\Delta I_\text{true}(d)}_{\text{grows with } d} \;>\; \underbrace{\epsilon_\text{corr}}_{\text{roughly constant}}
+```
+
+- **Mosaic.** Its recipe corrects every constellation, including the few satellites with large
+  code-levelled errors. Close in, the correction adds more than it removes. Measured on
+  homogeneous Mosaic clusters over five days:
+
+  | Distance to master | On-spec hours, nearest base | On-spec hours, VBS | Verdict |
+  |---|---|---|---|
+  | 22.3 km | **350** | 265 | direct RTK better, and less harmful distance |
+  | 26.0 km | **345** | 272 | direct RTK wins 3 days to 1 |
+  | 28.7 km | 266 | **374** | VBS wins 3 days to 2 |
+  | 36.9 km | 193 | **273** | VBS wins all 4 scored days |
+
+  Hence 28 km. Serving Mosaic clusters below 28 km *without* the ionosphere correction looked
+  better in a leave-one-out test, but on too few valid days to rely on, so those positions are
+  refused.
+- **UM980.** Its correction is applied on Galileo and BeiDou only. Those estimates are clean
+  (correlation with the true ionosphere +0.71 to +0.80), so the correction helps from the start.
+  The floor is then direct RTK's own ceiling, 13 km, the same for any family. Leave-one-out at
+  13-20 km: 17 wins, 7 losses, 4 ties against the previous recipe without correction.
+
+**The ceiling: how far the correction stays right.** Past 30-40 km the uncorrected ionosphere
+alone produces wrong fixes, so a cluster serves only as far as it can correct *every*
+constellation the rover uses.
+
+- **Mosaic.** It tracks genuine semi-codeless GPS L2 P(Y), consistent from receiver to receiver,
+  and GPS L2C. Its GPS ionosphere is usable, so all constellations are corrected. At 56.9 km a
+  Mosaic VBS gives **169 h within spec against 47 h** for the nearest base, with half the harmful
+  distance. Beyond 60 km neither works.
+- **UM980.** Its GPS L2 P(Y) code carries a per-unit offset of metres (a 3 m spread across
+  units) that drifts by up to metres over days. The GPS ionosphere estimated through it
+  correlates poorly with the truth (+0.10 to +0.77), worse than leaving it out (5 wins, 14 losses
+  with GPS added). So GPS satellites, and GLONASS satellites too, get **no** ionosphere
+  correction: a third to a half of those in view. Their residual grows with distance as in §1.3,
+  and by about 40 km it decides the result:
+  - at 38-40 km the UM980 VBS still beats the nearest base (5 wins, 2 losses, 1 tie);
+  - at 51-57 km it only trades, with twice the harmful distance.
+
+  Calibrating the P(Y) offset from each base's own L2C was tried. It does not help: with GPS
+  brought to its L2C level, the network ionosphere gets worse, not better.
+
+So the UM980 envelope starts where any VBS can start but stops early, for want of GPS; the
+Mosaic envelope reaches further but starts late, because its all-constellation correction is too
+noisy close in. A recipe that corrects the Mosaic's clean constellations only might lower its
+floor. It has not been measured.
 
 ---
 
