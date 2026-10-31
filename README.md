@@ -12,6 +12,8 @@ and streams it as ordinary RTCM 3. Where the rules say a VBS would not beat the 
 - `vbs-engine/deploy/millipede-caster-vbs.patch`: the caster side, one patch against upstream.
 - `vbs-engine/examples/`: the two JSON files `vbsd` reads, for a small invented network.
 - [`SPEC.md`](SPEC.md): how it works, the serving rules, the file formats, build and deployment.
+- [`THEORY.md`](THEORY.md): the maths and physics behind the VBS, from the observation
+  equations to the synthesised stream.
 
 ## Quick start
 

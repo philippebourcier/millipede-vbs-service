@@ -3,7 +3,8 @@
 This document describes what the service does, the measured rules that decide where it serves,
 the files it reads, and how to build, test and deploy it. The code comments cite decision numbers
 (`D146`, `D167`, ...) and research notes from the study that produced the engine. Those notes are
-not published; the comment next to each citation carries the result that matters.
+not published; the comment next to each citation carries the result that matters. The maths and
+physics are in [THEORY.md](THEORY.md).
 
 ## 1. What a VBS is, and when it helps
 
