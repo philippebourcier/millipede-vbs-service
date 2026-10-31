@@ -153,10 +153,13 @@ that is a few millimetres.
 
 ### 2.4 Why the ambiguities must be fixed
 
-With float ambiguities, the slant ionosphere converges only to **30-370 mm**. Code fixes the
-*level* of $\Delta I$, and phase fixes only how it changes. That is an order of magnitude above
-the 1.4-12.5 cm the correction is meant to remove. Fixing the ambiguities turns $\Delta I$ into
-a phase-determined quantity. Hence §3.
+Code fixes the *level* of $\Delta I$, and phase fixes only how it changes. With float
+ambiguities the single-difference ionosphere state reports 30-370 mm, but that figure is
+misleading: most of it is a level common to every satellite, which enters every synthesised
+phase alike and cancels in the rover's double differences. What reaches a rover is the
+*double-differenced* ionosphere. Its sigma is 37-76 mm with float ambiguities, the size of the
+1.4-12.5 cm the correction is meant to remove, and **5-9 mm once the cascade fixes them**.
+Hence §3.
 
 ---
 
@@ -275,6 +278,12 @@ Troposphere depends strongly on height. The a priori model difference between ma
 heights is computed (Saastamoinen at a common elevation), and only the *residual* is
 interpolated. Interpolating the whole term across stations at different altitudes would smear a
 height signal across a horizontal plane.
+
+The interpolated residual itself (the estimated $\Delta\text{ZTD}$ and gradients) is **not
+applied** in either served recipe: only the modelled height term is. Applying it took one
+Mosaic cluster from 0.56 % to 0.00 % false fixes, but it made mixed and UM980 clusters worse
+(on UM980: more harmful distance, 30.9 km against 36.6 km over the ladder). The estimated
+residual absorbs whatever else the filter cannot explain.
 
 ### 4.3 Extrapolation
 
@@ -440,8 +449,9 @@ integers on it.
 
 ### 7.3 When to serve at all
 
-Direct RTK is already at the acceptance ceiling below about 13 km: 97.7 % fixed with 1.2 % false
-at 10.7 km. Beyond that, whether a VBS helps depends on the family and the distance, and the
+Below about 13 km, direct RTK is already as good as a VBS can make it. Measured on six clean
+clusters at 6-13 km over five days, the VBS won 2 cluster-days, lost 5 and traded 23. At 12.77 km
+it gave up 88 points of on-spec time (468 against 381, five days summed). Beyond that, whether a VBS helps depends on the family and the distance, and the
 failure mode outside the envelope is a confident wrong fix, not a worse float. The rules
 (SPEC.md §4) encode the measured envelopes:
 
@@ -456,18 +466,23 @@ stream is opened.
 
 ### 7.4 Why the two families have different envelopes
 
-| Family | Serve between | Ionosphere correction applied on |
-|---|---|---|
-| Unicore UM980 / UM982 | 13-40 km | Galileo, BeiDou |
-| Septentrio Mosaic-X5 | 28-60 km | every constellation |
+| Family | Serve between | Ionosphere correction applied on | GPS L2 used |
+|---|---|---|---|
+| Unicore UM980 / UM982 | 13-40 km | Galileo, BeiDou | first slot (already L2C) |
+| Septentrio Mosaic-X5 | 28-60 km | every constellation | L2C (`--prefer-l2c`) |
+
+Below, "on-spec" is the share of epochs fixed with a de-biased horizontal error of at most
+2.5 cm, averaged over five days (§8).
 
 The two receivers are not of different quality. Homogeneous clusters of either family estimate
-the per-satellite ionosphere about equally cleanly:
+the per-satellite ionosphere about equally cleanly. Measured as the spread of each satellite's
+estimate about its baseline's common level (the level itself is a code bias that cancels at the
+rover):
 
-- the spread of each satellite's estimate about its baseline's common level is 2-16 cm for
-  UM980 clusters and 2-10 cm for Mosaic clusters, at 6-68 km;
-- a UM980 differenced against a Mosaic is worse than either: 12.7 cm at only 6 km, which is
-  why mixed clusters are refused.
+- homogeneous baselines: 2.4-9.4 cm;
+- a UM980 differenced against a Mosaic: 21.8-26.2 cm, at only 10-15 km.
+
+That second line is why mixed clusters are refused.
 
 The two bounds have different causes.
 
@@ -475,31 +490,35 @@ The two bounds have different causes.
 ionosphere grows with distance: 1.4 cm at 25-40 km, 3.8 cm at 90-110 km (§1.3). The correction's
 own error does not shrink with distance. The network fixes wide lanes only (§3.3), so each
 satellite's ionosphere state takes its level from code. On some satellites that leaves a
-constant error of 15-55 cm, from code biases that do not cancel. Applying the correction pays
-only where
+constant error of 15-56 cm, held for hours. A rover's float ambiguity can absorb such a constant;
+an integer cannot. Applying the correction pays only where
 
 ```math
 \underbrace{\nabla\Delta I_\text{true}(d)}_{\text{grows with } d} \;>\; \underbrace{\epsilon_\text{corr}}_{\text{roughly constant}}
 ```
 
 - **Mosaic.** Its recipe corrects every constellation, including the few satellites with large
-  code-levelled errors. Close in, the correction adds more than it removes. Measured on
-  homogeneous Mosaic clusters over five days:
+  code-levelled errors. Close in, the correction adds more than it removes. Homogeneous Mosaic
+  clusters, five days each:
 
-  | Distance to master | On-spec hours, nearest base | On-spec hours, VBS | Verdict |
+  | Distance to master | On-spec, nearest base | On-spec, VBS | Days won (VBS - nearest) |
   |---|---|---|---|
-  | 22.3 km | **350** | 265 | direct RTK better, and less harmful distance |
-  | 26.0 km | **345** | 272 | direct RTK wins 3 days to 1 |
-  | 28.7 km | 266 | **374** | VBS wins 3 days to 2 |
-  | 36.9 km | 193 | **273** | VBS wins all 4 scored days |
+  | 22.3 km | **70 %** | 53 % | 2 - 2, 1 trade |
+  | 26.0 km | **69 %** | 54 % | 1 - 3 |
+  | 28.7 km | 53 % | **75 %** | 3 - 2 |
+  | 36.9 km | 39 % | **55 %** | 4 - 0 |
 
-  Hence 28 km. Serving Mosaic clusters below 28 km *without* the ionosphere correction looked
-  better in a leave-one-out test, but on too few valid days to rely on, so those positions are
-  refused.
+  Better base coordinates (§5.3) improve the 22.3 km cluster, but one of its days still had
+  wrong fixes on 52 % of fixed epochs, against 1 % for the nearest base. Removing the correction
+  below 28 km does not rescue it either. Leave-one-out over four days, the VBS without a
+  correction still loses to the nearest base: 80.2 % fixed against 87.4 %, blunders 2.8 % against
+  0.8 %, 18 cases won against 42 lost. Close in, a Mosaic nearest base is simply good. Hence
+  28 km.
 - **UM980.** Its correction is applied on Galileo and BeiDou only. Those estimates are clean
   (correlation with the true ionosphere +0.71 to +0.80), so the correction helps from the start.
-  The floor is then direct RTK's own ceiling, 13 km, the same for any family. Leave-one-out at
-  13-20 km: 17 wins, 7 losses, 4 ties against the previous recipe without correction.
+  Leave-one-out over four days, it beats the same VBS without a correction in 143 cases against
+  81 at 13-40 km, and 46 against 34 at 13-20 km. The floor is then the point below which direct
+  RTK is already as good as it gets, 13 km, the same for any family (§7.3).
 
 **The ceiling: how far the correction stays right.** Past 30-40 km the uncorrected ionosphere
 alone produces wrong fixes, so a cluster serves only as far as it can correct *every*
@@ -507,24 +526,27 @@ constellation the rover uses.
 
 - **Mosaic.** It tracks genuine semi-codeless GPS L2 P(Y), consistent from receiver to receiver,
   and GPS L2C. Its GPS ionosphere is usable, so all constellations are corrected. At 56.9 km a
-  Mosaic VBS gives **169 h within spec against 47 h** for the nearest base, with half the harmful
+  Mosaic VBS is on spec 34 % of the time against 9 % for the nearest base, with half the harmful
   distance. Beyond 60 km neither works.
+  - The engine reads the first L2 column, which on a Mosaic is often the semi-codeless one.
+    Reading its L2C instead (`--prefer-l2c`) is the largest single gain measured on Mosaic
+    clusters: harmful distance down 57 %, with 7 % more time on spec, winning 11 of 20
+    cluster-days and losing none.
 - **UM980.** Its GPS L2 P(Y) code carries a per-unit offset of metres (a 3 m spread across
   units) that drifts by up to metres over days. The GPS ionosphere estimated through it
-  correlates poorly with the truth (+0.10 to +0.77), worse than leaving it out (5 wins, 14 losses
-  with GPS added). So GPS satellites, and GLONASS satellites too, get **no** ionosphere
-  correction: a third to a half of those in view. Their residual grows with distance as in §1.3,
-  and by about 40 km it decides the result:
-  - at 38-40 km the UM980 VBS still beats the nearest base (5 wins, 2 losses, 1 tie);
+  correlates poorly with the truth (+0.10 to +0.77), worse than leaving it out (5 cluster-days
+  won, 14 lost with GPS added). So GPS satellites, and GLONASS satellites too, get **no**
+  ionosphere correction: a third to a half of those in view. Their residual grows with distance
+  as in §1.3, and by about 40 km it decides the result:
+  - at 38-40 km the UM980 VBS still beats the nearest base (5 cluster-days won, 2 lost, 1 trade);
   - at 51-57 km it only trades, with twice the harmful distance.
 
   Calibrating the P(Y) offset from each base's own L2C was tried. It does not help: with GPS
   brought to its L2C level, the network ionosphere gets worse, not better.
 
-So the UM980 envelope starts where any VBS can start but stops early, for want of GPS; the
-Mosaic envelope reaches further but starts late, because its all-constellation correction is too
-noisy close in. A recipe that corrects the Mosaic's clean constellations only might lower its
-floor. It has not been measured.
+So the UM980 envelope starts where any VBS can start but stops early, for want of GPS. The
+Mosaic envelope reaches further but starts late, because close in neither its corrected nor its
+uncorrected VBS beats a Mosaic nearest base.
 
 ---
 
@@ -540,8 +562,20 @@ floor. It has not been measured.
   reproduce the master's observations exactly. Through the MSM7 encoder and an independent
   decoder (RTKLIB), they must match within one MSM least significant bit: 0.56 mm on code,
   0.14 mm on phase (`tests/test_zero_baseline.c`).
-- **Acceptance**, relative to the alternative at the same place: at least 90 % fixed, H95/V95
-  at most 10 cm, at most 1 % false fixes.
+- **Scoring.** A wrong fix and a missing fix do not cost the same: a missing fix is announced
+  (an autosteer disengages), a wrong one is silent, and lasts (median 99 s, worst 592 s, that is
+  1.6 km of a 10 km/h pass). So every epoch is classed as follows, with the error taken after
+  removing each run's median offset:
+  - **on-spec**: fixed, horizontal error at most 2.5 cm;
+  - **tolerable**: at most 10 cm;
+  - **harmful**: more than 10 cm;
+  - **no service**: no fix.
+
+  A VBS **beats** the nearest base at a place when, day by day, it gives more on-spec time *and*
+  no more harmful distance (distance travelled on harmful epochs). When the two disagree it is a
+  **trade**. Days are counted one by one, never pooled first, because pooling five days and then
+  testing gives a different answer. A configuration also has to stay under 2 % harmful epochs,
+  with no single harmful episode beyond about 120 s. Every envelope was set this way.
 
 ## References
 
