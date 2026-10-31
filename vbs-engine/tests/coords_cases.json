@@ -1,0 +1,53 @@
+{
+ "document_type": "millipede_rtcm3_1005_coordinate_reference",
+ "schema_version": "0.1",
+ "description": "EXAMPLE ONLY -- five invented stations showing the shape vbsd --coords reads, and the three outcomes it distinguishes. The production document is not in this repository: it is a precise point-positioning product covering the live network, and it changes as sites are recomputed. Point --coords at that file; this one exists so the format is documented and the test has something to run against.",
+ "calculation_date": "2026-01-01",
+ "sources": {
+  "EX01": {
+   "mp": "EX01",
+   "rinex_code_world": "X00100EXA",
+   "x_m": 4300000.0100, "y_m": 100000.0100, "z_m": 4700000.0100,
+   "reference_frame": "RGF93 v2b",
+   "calculation_kind": "NATIONAL_TRANSFORMATION",
+   "calculation_quality": "PRELIMINARY_NOT_QUALIFIED",
+   "_comment": "APPLIED. A centimetre-scale correction, which is the normal case and the one that turned out to matter: on real data, shifts of 7-9 mm halved a rover's harmful distance (D146)."
+  },
+  "EX02": {
+   "mp": "EX02",
+   "rinex_code_world": "X00200EXA",
+   "x_m": 4300100.0000, "y_m": 100100.0000, "z_m": 4700100.0000,
+   "reference_frame": "RGF93 v2b",
+   "calculation_kind": "NATIONAL_TRANSFORMATION",
+   "calculation_quality": "PRELIMINARY_NOT_QUALIFIED",
+   "_comment": "APPLIED. Identical to the registry: an entry agreeing costs nothing and is still worth carrying, because absence and agreement are different facts."
+  },
+  "EX03": {
+   "mp": "EX03",
+   "rinex_code_world": "X00300EXA",
+   "x_m": 4399999.0000, "y_m": 100200.0000, "z_m": 4700200.0000,
+   "reference_frame": "ETRS89-XXX",
+   "calculation_kind": "NATIONAL_TRANSFORMATION",
+   "calculation_quality": "PRELIMINARY_NOT_QUALIFIED",
+   "_comment": "REFUSED, too far. ~100 km from the registry. The real document contains two entries 160 and 215 km out; a mismatched mountpoint looks exactly the same, and teleporting a base is far worse than a slightly stale coordinate. --coords-max-m bounds it."
+  },
+  "EX04": {
+   "mp": "EX04",
+   "rinex_code_world": "X00400EXA",
+   "x_m": 4300300.5000, "y_m": 100300.5000, "z_m": 4700300.5000,
+   "reference_frame": "ITRF2020",
+   "calculation_kind": "GLOBAL_ITRF2020_BASELINE",
+   "calculation_quality": "EXPLORATORY_GLOBAL_BASELINE",
+   "_comment": "REFUSED on quality. These are computed without a national transformation and sit a median of 0.66 m from the registry -- worse than what they would replace. The file says so; believing it is free."
+  },
+  "EX99": {
+   "mp": "EX99",
+   "rinex_code_world": "X99900EXA",
+   "x_m": 4300400.0000, "y_m": 100400.0000, "z_m": 4700400.0000,
+   "reference_frame": "RGF93 v2b",
+   "calculation_kind": "NATIONAL_TRANSFORMATION",
+   "calculation_quality": "PRELIMINARY_NOT_QUALIFIED",
+   "_comment": "NOT IN THE CACHE. The reference document covers stations this network does not serve; they are counted and ignored, never added."
+  }
+ }
+}

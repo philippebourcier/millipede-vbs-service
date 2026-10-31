@@ -1,0 +1,11 @@
+{"version": 1, "generated": "example: nine invented stations, a UM980 and a Mosaic-X5 family", "bases": [
+  {"mp": "UA", "marker": "T00000XXX", "rec": "UNICORE UM980", "ant": "", "frame": "F2", "xyz": [4400849.09, 561510.227, 4567673.823], "live": true},
+  {"mp": "UB", "marker": "T00001XXX", "rec": "UNICORE UM980", "ant": "", "frame": "F1", "xyz": [4377600.273, 526425.789, 4593939.562], "live": true},
+  {"mp": "UC", "marker": "T00002XXX", "rec": "UNICORE UM980", "ant": "", "frame": "F1", "xyz": [4446185.252, 544861.338, 4525873.945], "live": true},
+  {"mp": "UR", "marker": "T00003XXX", "rec": "UNICORE UM980", "ant": "", "frame": "F1", "xyz": [4378019.129, 718132.963, 4567673.823], "live": true},
+  {"mp": "MA", "marker": "T00004XXX", "rec": "SEPT MOSAIC-X5", "ant": "", "frame": "F1", "xyz": [4374965.319, 536133.634, 4595317.488], "live": true},
+  {"mp": "MB", "marker": "T00005XXX", "rec": "SEPT MOSAIC-X5", "ant": "", "frame": "F1", "xyz": [4394310.25, 583885.473, 4571139.067], "live": true},
+  {"mp": "MC", "marker": "T00006XXX", "rec": "SEPT MOSAIC-X5", "ant": "", "frame": "F1", "xyz": [4439723.866, 538982.277, 4532868.326], "live": true},
+  {"mp": "MD", "marker": "T00007XXX", "rec": "SEPT MOSAIC-X5", "ant": "", "frame": "F1", "xyz": [4409946.566, 484910.025, 4567673.823], "live": true},
+  {"mp": "ME", "marker": "T00008XXX", "rec": "SEPT MOSAIC-X5", "ant": "", "frame": "F1", "xyz": [4369097.401, 576519.829, 4596006.283], "live": true}
+]}

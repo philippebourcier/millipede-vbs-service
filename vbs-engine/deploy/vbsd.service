@@ -1,0 +1,33 @@
+# systemd unit for the VBS caster. Install as /etc/systemd/system/vbsd.service, then:
+#   systemctl daemon-reload && systemctl enable --now vbsd
+# Regenerate the cache (format: examples/base_cache.json) and `systemctl reload vbsd` (SIGHUP) to
+# take it up without dropping a rover.
+[Unit]
+Description=VBS caster (vbsd)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vbs
+Group=vbs
+WorkingDirectory=/opt/vbs
+# --allow: ONLY the millipede caster should reach this port; rovers are authenticated there.
+# --coords: the operator's coordinate document (see examples/coordinates.json). Required: a base absent from it is
+# untrusted and ignored (coordinate rule, 2026-10-02), and vbsd refuses to start without one.
+# Refresh the file, then `systemctl reload vbsd` -- the reload re-applies it.
+# --no-backup: "2 + 1 backup" stays off until its leave-one-out results are read; drop the flag
+# to turn it on.
+ExecStart=/opt/vbs/bin/vbsd --cache /opt/vbs/base_cache.json \
+    --coords /opt/vbs/coordinates.json --caster caster.example.org:2101 \
+    --listen 2102 --allow 127.0.0.1,::1 --no-backup
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+# stderr is the log; journald keeps it
+StandardOutput=journal
+StandardError=journal
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+{"sources": {
+  "UA": {"x_m": 4400849.09, "y_m": 561510.227, "z_m": 4567673.823, "reference_frame": "F2", "calculation_quality": "FINAL"},
+  "UB": {"x_m": 4377600.273, "y_m": 526425.789, "z_m": 4593939.562, "reference_frame": "F1", "calculation_quality": "FINAL"},
+  "UC": {"x_m": 4446185.252, "y_m": 544861.338, "z_m": 4525873.945, "reference_frame": "F1", "calculation_quality": "FINAL"},
+  "UR": {"x_m": 4378019.129, "y_m": 718132.963, "z_m": 4567673.823, "reference_frame": "F1", "calculation_quality": "FINAL"},
+  "MA": {"x_m": 4374965.319, "y_m": 536133.634, "z_m": 4595317.488, "reference_frame": "F1", "calculation_quality": "FINAL"},
+  "MB": {"x_m": 4394310.25, "y_m": 583885.473, "z_m": 4571139.067, "reference_frame": "F1", "calculation_quality": "FINAL"},
+  "MC": {"x_m": 4439723.866, "y_m": 538982.277, "z_m": 4532868.326, "reference_frame": "F1", "calculation_quality": "FINAL"},
+  "MD": {"x_m": 4409946.566, "y_m": 484910.025, "z_m": 4567673.823, "reference_frame": "F1", "calculation_quality": "FINAL"},
+  "ME": {"x_m": 4369097.401, "y_m": 576519.829, "z_m": 4596006.283, "reference_frame": "F1", "calculation_quality": "FINAL"}
+}}

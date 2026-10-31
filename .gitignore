@@ -1,0 +1,14 @@
+# Build products: the engine's tools and test binaries rebuild from source.
+vbs-engine/tools/*
+!vbs-engine/tools/*.c
+vbs-engine/tests/test_*
+!vbs-engine/tests/test_*.c
+!vbs-engine/tests/test_*.sh
+vbs-engine/tests/helpers/*
+!vbs-engine/tests/helpers/*.c
+*.o
+*.d
+vbs-engine/.buildflags
+
+# Optional local test data (see SPEC.md, "Tests"), never committed.
+vbs-engine/testdata/

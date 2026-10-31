@@ -1,0 +1,1137 @@
+VBS support for millipede-caster: the vbs: configuration block, the serving hook that
+routes a rover's GET /<lat>/<lon>/<alt> to vbsd, and their tests.
+
+Upstream: https://github.com/pbeyssac/millipede-caster.git
+Against:  7a9ce17
+Apply:    cd millipede-caster && patch -p1 < millipede-caster-vbs.patch
+
+diff --git a/caster/caster.c b/caster/caster.c
+index bb79363..fa31188 100644
+--- a/caster/caster.c
++++ b/caster/caster.c
+@@ -12,6 +12,7 @@
+ #include <stdarg.h>
+ #include <stdio.h>
+ #include <string.h>
++#include <netdb.h>
+ #include <sys/queue.h>
+ #include <sys/socket.h>
+ #include <sys/time.h>
+@@ -745,6 +746,55 @@ caster_reload_auth(struct caster_state *caster, struct config *new_config) {
+ 	return r;
+ }
+ 
++/*
++ * VBS (spec S6b): the VBS caster pulls one stream per base per tile from this caster, so its
++ * address must not be subject to the per-IP connection quota. Resolve each configured host and
++ * add its addresses to the quota table as unlimited (-1).
++ */
++static int
++caster_vbs_quota(struct caster_state *caster, struct config *new_config) {
++	int added = 0;
++
++	for (int i = 0; i < new_config->vbs_count; i++) {
++		struct addrinfo hints, *res, *ai;
++
++		memset(&hints, 0, sizeof hints);
++		hints.ai_socktype = SOCK_STREAM;
++		if (getaddrinfo(new_config->vbs[i].host, NULL, &hints, &res) != 0) {
++			logfmt(&caster->flog, LOG_WARNING, "vbs: cannot resolve %s; its connections stay under the IP quota",
++				new_config->vbs[i].host);
++			continue;
++		}
++		for (ai = res; ai != NULL; ai = ai->ai_next) {
++			char ip[64], prefix[80];
++			union sock sa;
++			struct prefix_quota *pq;
++
++			memset(&sa, 0, sizeof sa);
++			if (ai->ai_addrlen > sizeof sa)
++				continue;
++			memcpy(&sa, ai->ai_addr, ai->ai_addrlen);
++			if (ip_str(&sa, ip, sizeof ip) == NULL)
++				continue;
++			snprintf(prefix, sizeof prefix, "%s/%d", ip, ai->ai_family == AF_INET6 ? 128 : 32);
++			if (new_config->blocklist == NULL && (new_config->blocklist = prefix_table_new()) == NULL)
++				break;
++			if ((pq = prefix_quota_parse(prefix, "-1")) == NULL)
++				continue;
++			if (prefix_table_add(new_config->blocklist, pq) < 0) {
++				free(pq);
++				continue;
++			}
++			added++;
++			logfmt(&caster->flog, LOG_INFO, "vbs: %s (%s) exempted from the connection quota", new_config->vbs[i].host, ip);
++		}
++		freeaddrinfo(res);
++	}
++	if (added && new_config->blocklist)
++		prefix_table_sort(new_config->blocklist);
++	return 0;
++}
++
+ static int
+ caster_reload_blocklist(struct caster_state *caster, struct config *new_config) {
+ 	int r = 0;
+@@ -762,6 +812,8 @@ caster_reload_blocklist(struct caster_state *caster, struct config *new_config)
+ 		}
+ 		new_config->blocklist = p;
+ 	}
++	if (r == 0)
++		caster_vbs_quota(caster, new_config);
+ 	return r;
+ }
+ 
+diff --git a/caster/config.c b/caster/config.c
+index 0b39348..ff7a6ad 100644
+--- a/caster/config.c
++++ b/caster/config.c
+@@ -75,6 +75,23 @@ static struct config_proxy default_config_proxy = {
+ 	.priority = 20
+ };
+ 
++static struct config_vbs default_config_vbs = {
++	.port = 2101,
++	/*
++	 * 15 km rests on D83: direct RTK at 10.7 and 12.5 km already measures 97.7 %/1.22 % and
++	 * 98.3 %/0.62 %, so there is no headroom for a virtual station below it.
++	 *
++	 * 60 km does NOT rest on a comparable measurement. D86/D88 set it from one cluster on one
++	 * day; D95 retracted that, and D97's ladder could not replace it because every rung was
++	 * extrapolating outside its cluster hull. It stays here as the configured value,
++	 * flagged in the spec as contested, pending the per-chip baseline sweep.
++	 */
++	.min_dist_km = 15.0,
++	.max_dist_km = 60.0,
++	.hysteresis_m = 1000.0,
++	.mountpoint = NULL
++};
++
+ static struct config_node default_config_node = {
+ 	.port = 2443,
+ 	.tls = 0,
+@@ -184,6 +201,27 @@ static const cyaml_schema_value_t proxy_schema = {
+ 		struct config_proxy, proxy_fields_schema),
+ };
+ 
++static const cyaml_schema_field_t vbs_fields_schema[] = {
++	CYAML_FIELD_STRING_PTR(
++		"host", CYAML_FLAG_POINTER, struct config_vbs, host, 0, CYAML_UNLIMITED),
++	CYAML_FIELD_UINT(
++		"port", CYAML_FLAG_OPTIONAL, struct config_vbs, port),
++	CYAML_FIELD_FLOAT(
++		"vbs_min_km", CYAML_FLAG_OPTIONAL, struct config_vbs, min_dist_km),
++	CYAML_FIELD_FLOAT(
++		"vbs_max_km", CYAML_FLAG_OPTIONAL, struct config_vbs, max_dist_km),
++	CYAML_FIELD_FLOAT(
++		"hysteresis_m", CYAML_FLAG_OPTIONAL, struct config_vbs, hysteresis_m),
++	CYAML_FIELD_STRING_PTR(
++		"vbs_mountpoint", CYAML_FLAG_POINTER, struct config_vbs, mountpoint, 0, CYAML_UNLIMITED),
++	CYAML_FIELD_END
++};
++
++static const cyaml_schema_value_t vbs_schema = {
++	CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT,
++		struct config_vbs, vbs_fields_schema),
++};
++
+ static const cyaml_schema_field_t node_fields_schema[] = {
+ 	CYAML_FIELD_STRING_PTR(
+ 		"host", CYAML_FLAG_POINTER, struct config_node, host, 0, CYAML_UNLIMITED),
+@@ -339,6 +377,9 @@ static const cyaml_schema_field_t top_mapping_schema[] = {
+ 	CYAML_FIELD_SEQUENCE(
+ 		"proxy", CYAML_FLAG_POINTER|CYAML_FLAG_OPTIONAL,
+ 		struct config, proxy, &proxy_schema, 0, CYAML_UNLIMITED),
++	CYAML_FIELD_SEQUENCE(
++		"vbs", CYAML_FLAG_POINTER|CYAML_FLAG_OPTIONAL,
++		struct config, vbs, &vbs_schema, 0, CYAML_UNLIMITED),
+ 	CYAML_FIELD_SEQUENCE(
+ 		"trusted_http_proxy", CYAML_FLAG_POINTER|CYAML_FLAG_OPTIONAL,
+ 		struct config, trusted_http_proxy, &trusted_http_proxy_schema, 0, CYAML_UNLIMITED),
+@@ -516,6 +557,30 @@ struct config *config_parse(const char *filename, long long config_gen) {
+ 		DEFAULT_ASSIGN_ARRAY(this, i, proxy, default_config_proxy, priority);
+ 	}
+ 
++	for (int i = 0; i < this->vbs_count; i++) {
++		DEFAULT_ASSIGN_ARRAY(this, i, vbs, default_config_vbs, port);
++		DEFAULT_ASSIGN_ARRAY(this, i, vbs, default_config_vbs, min_dist_km);
++		DEFAULT_ASSIGN_ARRAY(this, i, vbs, default_config_vbs, max_dist_km);
++		DEFAULT_ASSIGN_ARRAY(this, i, vbs, default_config_vbs, hysteresis_m);
++		/*
++		 * An inverted or zero-width window would silently serve nothing (or everything),
++		 * which is exactly the class of "configured but not connected" defect this project
++		 * keeps finding. Refuse it at load.
++		 */
++		if (this->vbs[i].max_dist_km <= this->vbs[i].min_dist_km) {
++			_log(CYAML_LOG_ERROR, "vbs: vbs_max_km (%.1f) must exceed vbs_min_km (%.1f)",
++				this->vbs[i].max_dist_km, this->vbs[i].min_dist_km);
++			config_free(this);
++			return NULL;
++		}
++		if (this->vbs[i].mountpoint == NULL || this->vbs[i].mountpoint[0] == '\0'
++			|| this->vbs[i].host == NULL || this->vbs[i].host[0] == '\0') {
++			_log(CYAML_LOG_ERROR, "vbs: both host and vbs_mountpoint are required");
++			config_free(this);
++			return NULL;
++		}
++	}
++
+ 	for (int i = 0; i < this->node_count; i++) {
+ 		DEFAULT_ASSIGN_ARRAY(this, i, node, default_config_node, port);
+ 		DEFAULT_ASSIGN_ARRAY(this, i, node, default_config_node, queue_max_size);
+@@ -597,6 +662,12 @@ void config_free(struct config *this) {
+ 	}
+ 	free(this->proxy);
+ 
++	for (int i = 0; i < this->vbs_count; i++) {
++		free((char *)this->vbs[i].host);
++		free((char *)this->vbs[i].mountpoint);
++	}
++	free(this->vbs);
++
+ 	for (int i = 0; i < this->webroots_count; i++) {
+ 		free((char *)this->webroots[i].path);
+ 		free((char *)this->webroots[i].uri);
+@@ -662,3 +733,30 @@ void config_free(struct config *this) {
+ 		this->free_callback(this);
+ 	free(this);
+ }
++
++int config_vbs_wanted(const struct config_vbs *vbs, float nearest_dist_m, int current_vbs) {
++	if (vbs == NULL || nearest_dist_m < 0)
++		return 0;
++
++	float d = nearest_dist_m / 1000.0;
++	float lo = vbs->min_dist_km;
++	float hi = vbs->max_dist_km;
++	float h = vbs->hysteresis_m / 1000.0;
++
++	/*
++	 * Widen the window in the direction that preserves the current state, so a rover sitting on
++	 * a boundary does not alternate. A client already on the VBS keeps it until it is h beyond
++	 * either edge; one on the nearest base does not switch until it is h inside.
++	 */
++	if (current_vbs) {
++		lo -= h;
++		hi += h;
++	} else {
++		lo += h;
++		hi -= h;
++	}
++	if (hi < lo)		/* hysteresis wider than the window: keep whatever we are doing */
++		return current_vbs;
++
++	return d >= lo && d <= hi;
++}
+diff --git a/caster/config.h b/caster/config.h
+index 3d64886..59cce47 100644
+--- a/caster/config.h
++++ b/caster/config.h
+@@ -55,6 +55,50 @@ struct config_proxy {
+ 	int tls;
+ };
+ 
++/*
++ * VBS: an improved NEAR endpoint served by a separate VBS caster (spec S6b).
++ *
++ * The engine stays entirely out of this caster. A client asking for `mountpoint` and sending
++ * GGA is served from the nearest live base as usual when it is closer than min_dist_km or
++ * further than max_dist_km, and otherwise from the VBS caster, which is addressed by position:
++ *
++ *	GET /<LAT>/<LON>/<ALT>	on host:port
++ *
++ * The client's GGA is forwarded on that same upstream connection, so the VBS caster handles
++ * tile changes itself and this caster never reconnects for movement. A 404 from it means no
++ * cluster could be formed for that position; fall back to classic NEAR.
++ */
++struct config_vbs {
++	/*
++	 * VBS caster to connect to. The resolved address is also granted an unlimited number of
++	 * connections, since one upstream connection is opened per served tile.
++	 */
++	const char *host;
++	unsigned short port;
++
++	/*
++	 * Distance from the user to the nearest live base, in km, between which the VBS is used.
++	 *
++	 * The coarse gate. Every finer rule -- per-family envelopes (UM980 13-22 km, Mosaic
++	 * 20-60 km), all-F9P and mixed clusters refused, density and redundancy -- lives in the VBS
++	 * caster, which answers 404 when it refuses. 13-60 km admits every case a rule can serve:
++	 * below 13 km direct RTK wins outright, above 60 km neither service works (Phase 1 report).
++	 */
++	float min_dist_km;
++	float max_dist_km;
++
++	/*
++	 * Hysteresis on the two distance thresholds, in metres. Shutting a base changes which
++	 * base is nearest, which would otherwise flip a rover in and out of VBS mid-session.
++	 */
++	float hysteresis_m;
++
++	/*
++	 * The mountpoint that selects NEAR+VBS behaviour.
++	 */
++	const char *mountpoint;
++};
++
+ // IP prefix (IP address + prefix length)
+ struct config_trusted_http_proxy_prefixes {
+ 	struct prefix prefix;
+@@ -180,6 +224,12 @@ struct config {
+ 	struct config_proxy	*proxy;
+ 	int			proxy_count;
+ 
++	/*
++	 * VBS definition (optional; absent means the feature is off).
++	 */
++	struct config_vbs	*vbs;
++	int			vbs_count;
++
+ 	/*
+ 	 * Optional handling of X-Forwarded-For.
+ 	 */
+@@ -346,3 +396,21 @@ static inline REFCNT_INCREF_BODY(config_incref, struct config);
+ static inline REFCNT_DECREF_BODY(config_decref, struct config, config_free);
+ 
+ #endif
++
++/*
++ * Should a client at this distance from its nearest live base be served by the VBS?
++ *
++ * Spec S6c: the caster makes only the cheap distance test and leaves every other judgement --
++ * cluster composition, receiver family, signal capability, base density -- to the VBS caster,
++ * which answers 404 when it cannot serve. That division exists because the measured rules moved
++ * repeatedly during Phase 1 and will move again; keeping them in one process means the caster
++ * does not need redeploying when they do.
++ *
++ * `current_vbs` is whether the client is already on the VBS, so the window can be widened by
++ * the configured hysteresis in whichever direction keeps the current choice -- the same reason
++ * NEAR applies hysteresis to base switching, and it matters more here because shutting one base
++ * changes which base is nearest and would otherwise flip a rover in and out mid-session.
++ *
++ * Returns 1 to route to the VBS caster, 0 to serve the nearest base.
++ */
++int config_vbs_wanted(const struct config_vbs *vbs, float nearest_dist_m, int current_vbs);
+diff --git a/caster/livesource.c b/caster/livesource.c
+index 4cdde54..538db1f 100644
+--- a/caster/livesource.c
++++ b/caster/livesource.c
+@@ -548,6 +548,55 @@ static struct livesource *livesource_find_unlocked(struct caster_state *this, st
+ 	return result;
+ }
+ 
++struct livesource *livesource_fetch_explicit(struct caster_state *this, struct ntrip_state *st,
++	char *mountpoint, pos_t *mountpoint_pos, struct endpoint *e, struct ntrip_task **task) {
++	json_object *j = NULL;
++	struct livesource *np;
++	struct redistribute_cb_args *redis_args;
++	int r;
++
++	*task = NULL;
++	P_RWLOCK_WRLOCK(&this->livesources->lock);
++	np = (struct livesource *)hash_table_get(this->livesources->hash, mountpoint);
++	if (np != NULL && (np->state == LIVESOURCE_RUNNING || np->state == LIVESOURCE_FETCH_PENDING)) {
++		livesource_incref(np);
++		P_RWLOCK_UNLOCK(&this->livesources->lock);
++		return np;
++	}
++	np = livesource_new(mountpoint, LIVESOURCE_TYPE_FETCHED, LIVESOURCE_FETCH_PENDING);
++	if (np == NULL) {
++		P_RWLOCK_UNLOCK(&this->livesources->lock);
++		return NULL;
++	}
++	r = hash_table_add(this->livesources->hash, mountpoint, np);
++	if (r != 0) {
++		/* out of memory, or an entry in another state already holds the name */
++		livesource_decref(np);
++		P_RWLOCK_UNLOCK(&this->livesources->lock);
++		return NULL;
++	}
++	j = livesource_update_json(np, this, LIVESOURCE_UPDATE_ADD);
++	this->livesources->serial++;
++	ntrip_log(st, LOG_INFO, "VBS: fetching %s from %s:%d", mountpoint, e->host, e->port);
++	redis_args = redistribute_args_new(this, np, e, mountpoint, mountpoint_pos,
++		st->config->reconnect_delay, 0, st->config->on_demand_source_timeout);
++	if (redis_args == NULL) {
++		/* nothing will ever fetch it: take it back out rather than leave it pending forever */
++		hash_table_del(this->livesources->hash, mountpoint);
++		this->livesources->serial++;
++		P_RWLOCK_UNLOCK(&this->livesources->lock);
++		json_object_put(j);
++		return NULL;
++	}
++	ntrip_task_incref(redis_args->task);
++	*task = redis_args->task;
++	joblist_append_redistribute(this->joblist, redistribute_source_stream, redis_args);
++	livesource_incref(np);
++	P_RWLOCK_UNLOCK(&this->livesources->lock);
++	syncer_queue_json(this, j);
++	return np;
++}
++
+ /*
+  * Find a livesource by mountpoint name.
+  */
+diff --git a/caster/livesource.h b/caster/livesource.h
+index 623f3b0..cf4bcf9 100644
+--- a/caster/livesource.h
++++ b/caster/livesource.h
+@@ -103,6 +103,18 @@ struct request;
+ struct livesources *livesource_table_new(const char *hostname, struct timeval *start_date);
+ void livesource_table_free(struct livesources *this);
+ struct livesource *livesource_new(char *mountpoint, enum livesource_type type, enum livesource_state state);
++
++struct endpoint;
++struct ntrip_task;
++
++/*
++ * VBS: create (or find) a fetched livesource pulled from an explicit endpoint under a name of the
++ * caller's choosing, and start fetching it. Returns a counted reference, or NULL. When a fetch
++ * is started, *task receives a counted reference to it so the caller can write on the upstream
++ * connection (GGA forwarding); when an existing livesource is found instead, *task is NULL.
++ */
++struct livesource *livesource_fetch_explicit(struct caster_state *this, struct ntrip_state *st,
++	char *mountpoint, pos_t *mountpoint_pos, struct endpoint *e, struct ntrip_task **task);
+ void livesource_del(struct ntrip_state *st, struct livesource *this);
+ int livesource_connected(struct ntrip_state *st, char *mountpoint);
+ int livesource_exists(struct caster_state *this, char *mountpoint, pos_t *mountpoint_pos);
+diff --git a/caster/ntrip_common.c b/caster/ntrip_common.c
+index 5b68830..98c0b26 100644
+--- a/caster/ntrip_common.c
++++ b/caster/ntrip_common.c
+@@ -18,6 +18,7 @@
+ #include "log.h"
+ #include "livesource.h"
+ #include "ntrip_common.h"
++#include "ntrip_task.h"
+ #include "rtcm.h"
+ 
+ static void ntrip_deferred_free(struct ntrip_state *this, char *orig);
+@@ -94,6 +95,11 @@ struct ntrip_state *ntrip_new(struct caster_state *caster, struct bufferevent *b
+ 	this->subscription = NULL;
+ 	this->sourceline = NULL;
+ 	this->virtual_mountpoint = NULL;
++	this->vbs_active = 0;
++	this->vbs_retry_after = 0;
++	this->vbs_attached_at = 0;
++	this->vbs_task = NULL;
++	this->vbs_seq = 0;
+ 	this->status_code = 0;
+ 	this->id = 0;
+ 	memset(&this->http_args, 0, sizeof(this->http_args));
+@@ -404,6 +410,10 @@ static void _ntrip_free(struct ntrip_state *this, char *orig, int unlink) {
+ 	strfree(this->uri);
+ 	strfree(this->virtual_mountpoint);
+ 	strfree(this->host);
++	if (this->vbs_task) {
++		ntrip_task_decref(this->vbs_task);
++		this->vbs_task = NULL;
++	}
+ 
+ 	_ntrip_common_free(this);
+ 
+diff --git a/caster/ntrip_common.h b/caster/ntrip_common.h
+index 1d97e70..21605d4 100644
+--- a/caster/ntrip_common.h
++++ b/caster/ntrip_common.h
+@@ -242,6 +242,19 @@ struct ntrip_state {
+ 	 */
+ 	char *virtual_mountpoint;
+ 
++	/*
++	 * VBS (spec S6b). While `vbs_active` the client is subscribed to a livesource pulled from
++	 * the VBS caster for its own position -- one upstream connection per client, named
++	 * "<lat>/<lon>/<alt>?c=<id>" -- and its GGA lines are forwarded on that connection through
++	 * `vbs_task`. A refusal (404, or a stream that never came up) sets `vbs_retry_after`, and
++	 * the client is served from the nearest base until then.
++	 */
++	char vbs_active;
++	time_t vbs_retry_after;
++	time_t vbs_attached_at;
++	struct ntrip_task *vbs_task;
++	unsigned vbs_seq;	/* attach count: makes each upstream name unique */
++
+ 	/* Our own reference to the current configuration, to reduce locking */
+ 	struct config *config;
+ 	/* A possibly new configuration, if not NULL */
+diff --git a/caster/ntripsrv.c b/caster/ntripsrv.c
+index 2c90c79..2b636f0 100644
+--- a/caster/ntripsrv.c
++++ b/caster/ntripsrv.c
+@@ -16,7 +16,10 @@
+ #include "caster.h"
+ #include "file.h"
+ #include "http.h"
++#include "endpoints.h"
+ #include "jobs.h"
++#include "livesource.h"
++#include "ntrip_task.h"
+ #include "ntrip_common.h"
+ #include "packet.h"
+ #include "redistribute.h"
+@@ -223,6 +226,134 @@ int check_password(struct ntrip_state *this, const char *mountpoint, const char
+ 	return r;
+ }
+ 
++/*
++ * VBS (spec S6b): the improved-NEAR endpoint served by a separate VBS caster.
++ *
++ * The caster's whole part in it is the distance decision. A client on the configured VBS
++ * mountpoint whose nearest live base falls inside the [vbs_min_km, vbs_max_km] window is
++ * subscribed to a livesource pulled from the VBS caster for the client's own position, and its
++ * GGA lines are forwarded on that connection so the VBS caster can move it between tiles. A
++ * 404 from the VBS caster -- or an upstream that never comes up -- means "serve from the
++ * nearest base instead", which is what the code below this already does.
++ */
++#define VBS_RETRY_S		60	/* after a refusal, how long before the VBS is tried again */
++#define VBS_PENDING_MAX_S	30	/* a fetch pending longer than this is treated as failed */
++
++static struct config_vbs *ntripsrv_vbs_config(struct config *config, const char *mountpoint) {
++	if (mountpoint == NULL)
++		return NULL;
++	for (int i = 0; i < config->vbs_count; i++)
++		if (!strcmp(config->vbs[i].mountpoint, mountpoint))
++			return &config->vbs[i];
++	return NULL;
++}
++
++static void ntripsrv_vbs_detach(struct ntrip_state *st, const char *why) {
++	if (!st->vbs_active)
++		return;
++	st->vbs_active = 0;
++	if (st->vbs_task) {
++		ntrip_task_decref(st->vbs_task);
++		st->vbs_task = NULL;
++	}
++	ntrip_log(st, LOG_INFO, "VBS: leaving (%s)", why);
++}
++
++/*
++ * Subscribe the client to a fresh upstream pulled from the VBS caster for its position.
++ *
++ * Required lock: ntrip_state
++ */
++static int ntripsrv_vbs_attach(struct ntrip_state *st, struct config_vbs *vbs, float nearest_m) {
++	char mp[96];
++	struct endpoint e;
++	struct ntrip_task *task = NULL;
++	struct livesource *l;
++
++	/*
++	 * One upstream per client, because the GGA forwarded on it is this client's. The id
++	 * suffix keeps two rovers at the same 6-decimal position apart, and the attach count keeps
++	 * one rover's successive attaches apart: a stationary rover re-attaching after a refusal
++	 * would otherwise name an upstream that may still exist, get it back without a task, and
++	 * stop forwarding GGA -- leaving the VBS caster serving the tile it was first placed on.
++	 * The VBS caster reads the three numbers and ignores the rest.
++	 */
++	snprintf(mp, sizeof mp, "%.6f/%.6f/%.1f?c=%lld.%u", st->last_pos.lat, st->last_pos.lon,
++		st->last_pos.alt, st->id, ++st->vbs_seq);
++	endpoint_init(&e, vbs->host, vbs->port, 0);
++	l = livesource_fetch_explicit(st->caster, st, mp, &st->last_pos, &e, &task);
++	endpoint_free(&e);
++	if (l == NULL)
++		return -1;
++	if (st->vbs_task)
++		ntrip_task_decref(st->vbs_task);
++	st->vbs_task = task;
++	st->vbs_active = 1;
++	st->vbs_attached_at = time(NULL);
++	atomic_store(&st->rtcm_client_state, NTRIP_RTCM_POS_WAIT);
++	st->tmp_pos = st->last_pos;
++	joblist_append_ntrip_livesource(st->caster->joblist, redistribute_switch_source, st, l, NULL);
++	livesource_decref(l);
++	ntrip_log(st, LOG_INFO, "VBS: attached to %s at %s:%d (nearest base %.1f km)", mp, vbs->host,
++		vbs->port, nearest_m / 1000.);
++	return 0;
++}
++
++/*
++ * Is the client's VBS upstream still there? Running, or pending for less than the grace period.
++ *
++ * Required lock: ntrip_state
++ */
++static int ntripsrv_vbs_alive(struct ntrip_state *st) {
++	enum livesource_state state = LIVESOURCE_INIT;
++	struct livesource *l;
++
++	if (!st->vbs_active || st->virtual_mountpoint == NULL)
++		return 0;
++	l = livesource_find_on_demand(st->caster, st, st->virtual_mountpoint, &st->mountpoint_pos, 1, 0, &state);
++	if (l == NULL)
++		return 0;
++	livesource_decref(l);
++	if (state == LIVESOURCE_RUNNING)
++		return 1;
++	return state == LIVESOURCE_FETCH_PENDING && time(NULL) - st->vbs_attached_at < VBS_PENDING_MAX_S;
++}
++
++/*
++ * Forward one GGA line to the VBS upstream. Queued as a job on the upstream's state so that
++ * the client's lock is never held while the upstream's is taken: the data path already takes
++ * them in the other order (upstream read -> subscriber send). Packet jobs run WITHOUT the
++ * state's lock and packet_send() requires it, so the job takes it itself (a data race on the
++ * upstream's counters with ntripcli_send_request(), found by ThreadSanitizer with -t 4).
++ */
++static void ntripsrv_vbs_gga_job(struct ntrip_state *up, struct packet *p, void *arg1) {
++	struct bufferevent *bev = up->bev;
++
++	if (bev == NULL)
++		return;
++	bufferevent_lock(bev);
++	if (ntrip_get_state(up) != NTRIP_END)
++		packet_send(p, up, time(NULL));
++	bufferevent_unlock(bev);
++}
++
++static void ntripsrv_vbs_forward_gga(struct ntrip_state *st, const char *line) {
++	struct ntrip_state *up;
++	struct packet *p;
++	char buf[256];
++
++	if (!st->vbs_active || st->vbs_task == NULL)
++		return;
++	if ((up = ntrip_task_get_st_ref(st->vbs_task)) == NULL)
++		return;
++	snprintf(buf, sizeof buf, "%s\r\n", line);
++	if ((p = packet_new_from_string(buf)) != NULL) {
++		joblist_append_ntrip_packet(st->caster->joblist, ntripsrv_vbs_gga_job, up, p, NULL);
++		packet_decref(p);
++	}
++	ntrip_decref(up, "ntripsrv_vbs_forward_gga");
++}
++
+ /*
+  * Do rate limit checks then run ntripsrv_redo_virtual_pos()
+  * if adequate.
+@@ -311,6 +442,35 @@ void ntripsrv_redo_virtual_pos(struct ntrip_state *st) {
+ 
+ 	char *m = s->dist_array[0].mountpoint;
+ 
++	/*
++	 * VBS: inside the window, serve from the VBS caster and do nothing else here.
++	 */
++	struct config_vbs *vbs = ntripsrv_vbs_config(st->config, st->mountpoint);
++	if (vbs != NULL) {
++		time_t now = time(NULL);
++		int want = config_vbs_wanted(vbs, s->dist_array[0].dist, st->vbs_active);
++
++		if (want && st->vbs_retry_after > now)
++			want = 0;
++		if (want) {
++			if (ntripsrv_vbs_alive(st)) {
++				sourcetable_decref(pos_sourcetable);
++				dist_table_free(s);
++				return;
++			}
++			if (st->vbs_active) {
++				/* attached, and the upstream is gone: refused, or failed to come up */
++				ntripsrv_vbs_detach(st, "upstream refused or failed; nearest base for a while");
++				st->vbs_retry_after = now + VBS_RETRY_S;
++			} else if (ntripsrv_vbs_attach(st, vbs, s->dist_array[0].dist) == 0) {
++				sourcetable_decref(pos_sourcetable);
++				dist_table_free(s);
++				return;
++			}
++		} else
++			ntripsrv_vbs_detach(st, "outside the distance window");
++	}
++
+ 	int current_livesource_live = 0;
+ 	if (st->virtual_mountpoint)
+ 		current_livesource_live = livesource_exists(st->caster, st->virtual_mountpoint, &st->mountpoint_pos);
+@@ -592,6 +752,7 @@ void ntripsrv_readcb(struct bufferevent *bev, void *arg) {
+ 					char *mountpoint = st->http_args[1]+1;
+ 					struct sourceline *sourceline = NULL;
+ 					int subscribe_ok = 0;
++					struct config_vbs *vbs_cfg = ntripsrv_vbs_config(config, mountpoint);
+ 
+ 					if (*mountpoint) {
+ 						if (config->dyn->rtcm_filter && rtcm_filter_check_mountpoint(config->dyn, mountpoint))
+@@ -610,7 +771,7 @@ void ntripsrv_readcb(struct bufferevent *bev, void *arg) {
+ 						// from a regular source to a virtual source, including when using wildcards, ahd the previous
+ 						// livesource is still active.
+ 						//
+-						if (sourceline == NULL || !sourceline->virtual)
++						if (vbs_cfg == NULL && (sourceline == NULL || !sourceline->virtual))
+ 							subscribe_ok = livesource_find_and_subscribe(st->caster, st, mountpoint, NULL, 1, sourceline?sourceline->on_demand:0);
+ 						else
+ 							subscribe_ok = 0;
+@@ -622,7 +783,7 @@ void ntripsrv_readcb(struct bufferevent *bev, void *arg) {
+ 					 *
+ 					 * Empty mountpoint name: always reply with the sourcetable.
+ 					 */
+-					if (*mountpoint == '\0' || (!sourceline && !subscribe_ok && st->client_version == 1)) {
++					if (*mountpoint == '\0' || (!sourceline && !subscribe_ok && !vbs_cfg && st->client_version == 1)) {
+ 						st->type = "client";
+ 						err = ntripsrv_send_sourcetable(st, output);
+ 						if (st->connection_keepalive && st->received_keepalive) {
+@@ -640,7 +801,7 @@ void ntripsrv_readcb(struct bufferevent *bev, void *arg) {
+ 						}
+ 					}
+ 					st->connection_keepalive = 0;
+-					if (!sourceline && !subscribe_ok) {
++					if (!sourceline && !subscribe_ok && !vbs_cfg) {
+ 						err = 404;
+ 						break;
+ 					}
+@@ -649,6 +810,10 @@ void ntripsrv_readcb(struct bufferevent *bev, void *arg) {
+ 						st->source_virtual = sourceline->virtual;
+ 						st->source_on_demand = sourceline->on_demand;
+ 						sourceline_decref(sourceline);
++					} else if (vbs_cfg) {
++						/* NEAR+VBS behaviour: virtual, whether or not the sourcetable lists it */
++						st->source_virtual = 1;
++						st->source_on_demand = 0;
+ 					} else {
+ 						st->source_virtual = 0;
+ 						st->source_on_demand = 1;
+@@ -808,6 +973,7 @@ void ntripsrv_readcb(struct bufferevent *bev, void *arg) {
+ 			if (parse_gga(line, &pos) >= 0) {
+ 				st->last_pos = pos;
+ 				st->last_pos_valid = 1;
++				ntripsrv_vbs_forward_gga(st, line);
+ 				joblist_append_ntrip_locked(st->caster->joblist, st, &ntripsrv_redo_virtual_pos_limited);
+ 			} else
+ 				ntrip_log(st, LOG_DEBUG, "BAD GGA \"%s\", %zd bytes", line, len);
+diff --git a/caster/tests.c b/caster/tests.c
+index a9a981b..3ab9081 100644
+--- a/caster/tests.c
++++ b/caster/tests.c
+@@ -1070,6 +1070,90 @@ static int test_json_get_authentication() {
+ 	return fail;
+ }
+ 
++static int vbs_gga_test(void) {
++	pos_t p;
++	int fail = 0;
++
++	printf("vbs_gga\n");
++	/* orthometric 35.0 + geoid 44.6 = ellipsoidal 79.6: what the VBS caster is handed */
++	if (parse_gga("$GPGGA,123519,4851.3960,N,00221.1320,E,4,12,0.9,35.0,M,44.6,M,,*75", &p) < 0
++	    || fabs(p.alt - 79.6) > 1e-3 || fabs(p.lat - 48.8566) > 1e-3) {
++		printf("FAIL: GGA altitude %.3f lat %.4f\n", p.alt, p.lat);
++		fail++;
++	} else
++		printf(".");
++	/* no height fields at all: 0, not garbage */
++	if (parse_gga("$GPGGA,123519,4851.3960,N,00221.1320,E,1,05,2.0,,M,,M,,*7D", &p) < 0 || p.alt != 0.0f) {
++		printf("FAIL: GGA without height %.3f\n", p.alt);
++		fail++;
++	} else
++		printf(".");
++	printf("\n");
++	return fail;
++}
++
++static int vbs_test(void) {
++	int fail = 0;
++
++	/* Every other test here names itself. Without this the twelve window cases print their
++	   dots onto the previous test's line, where a failure would be attributed to gga_test. */
++	printf("vbs_window\n");
++	struct config_vbs vbs = {
++		.host = "vbscaster.lan", .port = 2101,
++		.min_dist_km = 15.0, .max_dist_km = 60.0, .hysteresis_m = 1000.0,
++		.mountpoint = "VBS"
++	};
++	struct {
++		float dist_m;
++		int current;
++		int expect;
++		const char *what;
++	} t[] = {
++		/* plainly inside and outside the window */
++		{ 30000.0, 0, 1, "30 km, not on VBS -> use VBS" },
++		{  5000.0, 0, 0, "5 km -> nearest base" },
++		{ 90000.0, 0, 0, "90 km -> nearest base" },
++		/* hysteresis: a client NOT on the VBS needs to be 1 km inside the window */
++		{ 15500.0, 0, 0, "15.5 km, not on VBS -> still nearest base (needs 16)" },
++		{ 16500.0, 0, 1, "16.5 km, not on VBS -> switch to VBS" },
++		{ 59500.0, 0, 0, "59.5 km, not on VBS -> nearest base (needs 59 or less)" },
++		/* hysteresis: a client ON the VBS keeps it until 1 km outside */
++		{ 14500.0, 1, 1, "14.5 km, on VBS -> keep VBS" },
++		{ 13500.0, 1, 0, "13.5 km, on VBS -> drop to nearest base" },
++		{ 60500.0, 1, 1, "60.5 km, on VBS -> keep VBS" },
++		{ 61500.0, 1, 0, "61.5 km, on VBS -> drop to nearest base" },
++		/* a negative distance means we do not know: never route to the VBS */
++		{    -1.0, 1, 0, "unknown distance -> nearest base" },
++		{ 0, 0, 0, NULL }
++	};
++	for (int i = 0; t[i].what; i++) {
++		int got = config_vbs_wanted(&vbs, t[i].dist_m, t[i].current);
++		if (got == t[i].expect)
++			putchar('.');
++		else {
++			fail++;
++			printf("\nFAIL: %s (got %d, expected %d)\n", t[i].what, got, t[i].expect);
++		}
++	}
++
++	/*
++	 * Hysteresis wider than the window would otherwise invert it and flap on every GGA.
++	 * Whatever the client is doing must be preserved instead.
++	 */
++	struct config_vbs narrow = vbs;
++	narrow.min_dist_km = 30.0;
++	narrow.max_dist_km = 31.0;
++	narrow.hysteresis_m = 5000.0;
++	if (config_vbs_wanted(&narrow, 30500.0, 1) == 1 && config_vbs_wanted(&narrow, 30500.0, 0) == 0)
++		putchar('.');
++	else {
++		fail++;
++		printf("\nFAIL: hysteresis wider than the window should preserve the current state\n");
++	}
++	putchar('\n');
++	return fail;
++}
++
+ int main(int argc, const char **argv) {
+ 	int fail = 0;
+ 	const char *test_dir;
+@@ -1079,6 +1163,8 @@ int main(int argc, const char **argv) {
+ 		test_dir = argv[1];
+ 	fail += gga_test();
+ 	fail += nmea_checksum_test();
++	fail += vbs_test();
++	fail += vbs_gga_test();
+ 	fail += b64_test();
+ 	fail += test_ip_analyze_prefixquota();
+ 	fail += urldecode_test();
+diff --git a/caster/util.c b/caster/util.c
+index 1a39614..6115aa1 100644
+--- a/caster/util.c
++++ b/caster/util.c
+@@ -251,6 +251,9 @@ int parse_gga(const char *line, pos_t *pos) {
+ 	pos_t p;
+ 	int n;
+ 	int fix_type = 0;
++	float alt = 0, sep = 0;
++
++	p.alt = 0;
+ 
+ 	/* Skip garbage before the initial $, including any Ntrip-GGA: prefix */
+ 
+@@ -328,6 +331,16 @@ int parse_gga(const char *line, pos_t *pos) {
+ 			if (sscanf(token, "%d", &fix_type) != 1 || fix_type == 0)
+ 				err = 1;
+ 			break;
++		case 9:
++			/* Orthometric altitude, metres; may be empty */
++			if (*token && sscanf(token, "%f", &alt) != 1)
++				alt = 0;
++			break;
++		case 11:
++			/* Geoid separation, metres; the VBS caster wants the ellipsoidal sum */
++			if (*token && sscanf(token, "%f", &sep) != 1)
++				sep = 0;
++			break;
+ 		case 7:
+ 			/* Check number of satellites for the fix */
+ #if 0
+@@ -345,6 +358,7 @@ int parse_gga(const char *line, pos_t *pos) {
+ 	 */
+ 	if (err || n != 15)
+ 		return -1;
++	p.alt = alt + sep;
+ 	*pos = p;
+ 	return 1;
+ }
+diff --git a/caster/util.h b/caster/util.h
+index 1a9fb03..506ff64 100644
+--- a/caster/util.h
++++ b/caster/util.h
+@@ -11,6 +11,7 @@
+ // Geographical position
+ typedef struct pos {
+ 	float lat, lon;
++	float alt;		// ellipsoidal height, metres; 0 when the GGA carried none (VBS)
+ } pos_t;
+ 
+ typedef struct string_array {
+diff --git a/sample-config/caster.yaml b/sample-config/caster.yaml
+index e45f1f3..eef263e 100644
+--- a/sample-config/caster.yaml
++++ b/sample-config/caster.yaml
+@@ -37,6 +37,36 @@ listen:
+ #    port:			2101
+ #    filter_file:		sourcetable-filter.json
+ 
++#
++# VBS: an improved NEAR endpoint, served by a separate VBS caster.
++#
++# A client asking for vbs_mountpoint and sending GGA is served from the nearest live base as
++# usual when that base is nearer than vbs_min_km or further than vbs_max_km. In between, this
++# caster opens one upstream connection to the VBS caster, addressed by the user's position:
++#
++#	GET /<LAT>/<LON>/<ALT>
++#
++# and forwards the client's GGA on it. The VBS caster owns tiles, clusters and tile changes, so
++# this caster never reconnects when the rover moves. A 404 means no cluster could be formed
++# there: fall back to classic NEAR.
++#
++# host is also resolved to an IP which is exempted from the per-IP connection quota, since the
++# VBS caster pulls one base stream per base per tile from this caster.
++#
++# The window is the caster's coarse gate; every finer rule lives in the VBS caster and answers
++# 404 when it refuses. Measured envelopes (Phase 1, five days and two geometries each):
++# homogeneous UM980 13-22 km, homogeneous Mosaic 20-60 km, F9P and mixed clusters never. A
++# window of 13-60 km therefore admits every case a rule can serve; below 13 km direct RTK wins
++# outright, above 60 km neither service works.
++#
++#vbs:
++#  - host:			vbscaster.lan
++#    port:			2102
++#    vbs_min_km:		13
++#    vbs_max_km:		60
++#    hysteresis_m:		500
++#    vbs_mountpoint:		VBS
++
+ #
+ # Optional syslog configuration
+ #
+diff --git a/tests/runtests.sh b/tests/runtests.sh
+index 2e8ad6e..c473b07 100755
+--- a/tests/runtests.sh
++++ b/tests/runtests.sh
+@@ -219,6 +219,9 @@ for caster_args in "${CASTER_ARGS1}" "${CASTER_ARGS2}"; do
+ 	start ${type} ${caster_args} -c testconfig/caster9.yaml
+ 	run ${type} ${PID} test-syncer-node-reload.py
+ 
++	start ${type} ${caster_args} -c testconfig/caster10.yaml
++	run ${type} ${PID} test-vbs-serving.py
++
+     done
+     echo FAILS $nfail
+     totalfail=`expr $totalfail + $nfail`
+diff --git a/tests/test-vbs-serving.py b/tests/test-vbs-serving.py
+new file mode 100755
+index 0000000..ead38f8
+--- /dev/null
++++ b/tests/test-vbs-serving.py
+@@ -0,0 +1,185 @@
++#!/usr/bin/env python3
++
++import re
++import socket
++import sys
++import threading
++import time
++
++import testlib
++
++#
++# VBS serving hook (caster10.yaml): a rover on the VBS mountpoint whose nearest live base is
++# 13-60 km away is served from the VBS caster, which this script fakes on ::1:2199; nearer
++# than that, it is served by the nearest base as on any NEAR mountpoint; and a position the
++# VBS caster refuses with 404 falls back to the nearest base (at its next nearest-base recompute,
++# at least min_nearest_recompute_interval, 10 s, later).
++#
++# Base C63 is at 45.77 N, 3.1 E (sourcetable10.dat).
++#
++
++HOST='::1'
++PORT=2103
++VBS_PORT=2199
++REFUSE_NORTH_OF=46.15        # the fake VBS caster answers 404 north of this latitude
++
++def gga(lat):
++  # GGA at (lat, 3.1 E), with its checksum
++  d = int(lat)
++  body = 'GNGGA,120000.00,%02d%010.7f,N,00306.0000000,E,4,12,0.70,150.000,M,47.000,M,1.0,0000' % (d, (lat - d) * 60)
++  ck = 0
++  for c in body:
++    ck ^= ord(c)
++  return ('$%s*%02X\r\n' % (body, ck)).encode('ascii')
++
++class FakeVBS(object):
++  # Answers GET /<lat>/<lon>/<alt>?c=<id> with a stream of b'VBS <n>' lines, or 404 when refused,
++  # and records the requests and the GGA lines forwarded on each accepted connection.
++  def __init__(self):
++    self.requests = []
++    self.gga = []
++    self.err = 0
++    self._stop = False
++  def start(self):
++    self.sl = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
++    self.sl.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++    self.sl.bind((HOST, VBS_PORT))
++    self.sl.listen(20)
++    self.sl.settimeout(.2)
++    threading.Thread(target=self._run, daemon=True).start()
++  def stop(self):
++    self._stop = True
++  def _run(self):
++    while not self._stop:
++      try:
++        s, a = self.sl.accept()
++      except socket.timeout:
++        continue
++      threading.Thread(target=self._handle, args=(s,), daemon=True).start()
++  def _handle(self, s):
++    s.settimeout(1)
++    data = b''
++    while b'\r\n\r\n' not in data:
++      try:
++        d = s.recv(4096)
++      except socket.timeout:
++        continue
++      if d == b'':
++        return
++      data += d
++    req, rest = data.split(b'\r\n\r\n', 1)
++    m = re.match(rb'^GET /(-?[0-9.]+)/(-?[0-9.]+)/(-?[0-9.]+)\?c=[0-9.]+ HTTP/1\.[01]', req)
++    if m is None:
++      print("FAIL: unexpected request to the VBS caster:", req[:120])
++      self.err += 1
++      s.close()
++      return
++    lat = float(m.group(1))
++    self.requests.append(lat)
++    if lat > REFUSE_NORTH_OF:
++      s.sendall(b'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
++      s.close()
++      return
++    # a 1006 first, as from any base: the caster serves a source on NEAR only once it has one
++    s.sendall(b'HTTP/1.1 200 OK\r\nNtrip-Version: Ntrip/2.0\r\n\r\n' + testlib.rtcm_1006)
++    n = 0
++    buf = rest
++    s.settimeout(.5)
++    while not self._stop:
++      for line in buf.split(b'\n')[:-1]:
++        if line.startswith(b'$') and b'GGA' in line:
++          self.gga.append(line)
++      buf = buf.split(b'\n')[-1]
++      try:
++        s.sendall(b'VBS %d\r\n' % n)
++      except OSError:
++        break
++      n += 1
++      try:
++        d = s.recv(4096)
++        if d == b'':
++          break
++        buf += d
++      except socket.timeout:
++        pass
++    s.close()
++
++def rover(lat, seconds):
++  # A rover on VBS sending a GGA every second; returns everything it received after the header
++  s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
++  s.settimeout(1)
++  s.connect((HOST, PORT))
++  s.sendall(b'GET /VBS HTTP/1.1\r\nUser-Agent: NTRIP test\r\nNtrip-Version: Ntrip/2.0\r\n\r\n')
++  got = b''
++  end = time.time() + seconds
++  while time.time() < end:
++    try:
++      s.sendall(gga(lat))
++    except OSError:
++      break
++    t1 = time.time() + 1
++    while time.time() < t1:
++      try:
++        d = s.recv(4096)
++        if d == b'':
++          end = 0
++          break
++        got += d
++      except socket.timeout:
++        break
++  s.close()
++  return got
++
++err = 0
++vbs = FakeVBS()
++vbs.start()
++base = testlib.SourceStream((HOST, PORT), "C63", "test1:testpw!", 1000, start_packet=testlib.rtcm_1006)
++base.start()
++
++# 1. 30 km north of C63: inside the window, served by the VBS caster, GGA forwarded to it
++got = rover(46.04, 12)
++if b'VBS ' not in got:
++  print("FAIL: rover at 30 km got no VBS data:", got[-200:])
++  err += 1
++elif b'C63 ' in got.split(b'VBS ', 1)[1]:
++  print("FAIL: rover at 30 km got base data after the VBS stream started")
++  err += 1
++if not any(abs(l - 46.04) < 1e-4 for l in vbs.requests):
++  print("FAIL: no VBS request for the rover at 30 km:", vbs.requests)
++  err += 1
++if not vbs.gga:
++  print("FAIL: the rover's GGA was not forwarded to the VBS caster")
++  err += 1
++print("1: requests", vbs.requests, "forwarded GGA", len(vbs.gga))
++
++# 2. 0.6 km from C63: below the window, served by the base, the VBS caster never asked
++nreq = len(vbs.requests)
++err2 = err
++got = rover(45.775, 8)
++if b'C63 ' not in got:
++  print("FAIL: rover at 0.6 km got no base data:", got[-200:])
++  err += 1
++if b'VBS ' in got or len(vbs.requests) != nreq:
++  print("FAIL: rover at 0.6 km went to the VBS caster:", vbs.requests[nreq:])
++  err += 1
++print("2: ok" if err == err2 else "2: errors")
++
++# 3. 48 km north: inside the window but refused (404), falls back to the base
++nreq = len(vbs.requests)
++got = rover(46.20, 30)
++if not any(l > REFUSE_NORTH_OF for l in vbs.requests[nreq:]):
++  print("FAIL: no VBS request for the refused rover:", vbs.requests[nreq:])
++  err += 1
++if b'C63 ' not in got:
++  print("FAIL: refused rover was not sent to the nearest base:", got[-200:])
++  err += 1
++print("3: requests", vbs.requests[nreq:])
++
++base.stop()
++vbs.stop()
++err += vbs.err
++
++if not err and testlib.TestServerAlive(HOST, PORT):
++  print("FAIL: caster not answering")
++  err = 1
++sys.exit(err)
+diff --git a/tests/testconfig/caster10.yaml b/tests/testconfig/caster10.yaml
+new file mode 100644
+index 0000000..68ebdc1
+--- /dev/null
++++ b/tests/testconfig/caster10.yaml
+@@ -0,0 +1,23 @@
++listen:
++  - port:		2103
++    ip:			::1
++
++#
++# VBS serving hook (patches 0001-0003): rovers on VBS whose nearest live base is 13-60 km away
++# are served from the VBS caster at ::1:2199 -- a fake one, run by test-vbs-serving.py.
++#
++vbs:
++  - host:			::1
++    port:			2199
++    vbs_min_km:			13
++    vbs_max_km:			60
++    hysteresis_m:		500
++    vbs_mountpoint:		VBS
++
++host_auth_file:		host.auth
++source_auth_file:	source.auth
++sourcetable_file:	sourcetable10.dat
++access_log:		../test-access.log
++log:			../test-caster.log
++log_level:		DEBUG
++admin_user:		admin
+diff --git a/tests/testconfig/sourcetable10.dat b/tests/testconfig/sourcetable10.dat
+new file mode 100644
+index 0000000..ea421ea
+--- /dev/null
++++ b/tests/testconfig/sourcetable10.dat
+@@ -0,0 +1,4 @@
++# Sourcetable header
++#
++# Test with empty lines for potential buffer overflow
++STR;C63;C63;RTCM3;1004,1005,1006,1008,1012,1019,1020,1033,1042,1045,1046,1077,1087,1097,1107,1127,1230;2;GPS+GLO+GAL+BDS+QZS;NONE;NONE;45.77;3.1;0;0;Test 63,0;NONE;N;N;;
