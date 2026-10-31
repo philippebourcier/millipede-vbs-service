@@ -19,14 +19,14 @@ quantities are in metres unless stated.
 For a receiver $r$ tracking satellite $s$ on band $i$, code $P$ and carrier phase $\Phi$
 (in metres) are:
 
-$$
+```math
 P^s_{r,i} = \rho^s_r + c(\delta t_r - \delta t^s) + T^s_r + \mu_i I^s_r + b_{r,i} - b^s_i + \varepsilon_P
-$$
+```
 
-$$
+```math
 \Phi^s_{r,i} = \rho^s_r + c(\delta t_r - \delta t^s) + T^s_r - \mu_i I^s_r + \lambda_i N^s_{r,i}
 + \beta_{r,i} - \beta^s_i + \varepsilon_\Phi
-$$
+```
 
 - $\rho$ is the geometric range, including the Sagnac correction;
 - $\delta t_r$, $\delta t^s$ are the receiver and satellite clocks;
@@ -43,16 +43,16 @@ $$
 RTK differences between two receivers (rover $R$, base $B$) and then between two satellites $s$
 and a reference $q$:
 
-$$
+```math
 \nabla\Delta(\cdot) = \left[(\cdot)^s_R - (\cdot)^s_B\right] - \left[(\cdot)^q_R - (\cdot)^q_B\right]
-$$
+```
 
 Clocks and hardware biases cancel, and the ambiguity $\nabla\Delta N$ is an integer:
 
-$$
+```math
 \nabla\Delta\Phi_i = \nabla\Delta\rho + \nabla\Delta T - \mu_i \nabla\Delta I
 + \lambda_i \nabla\Delta N_i + \varepsilon
-$$
+```
 
 What does not cancel is the **spatial decorrelation** of the atmosphere and of the orbit error
 over the baseline: $\nabla\Delta I$, $\nabla\Delta T$ and a term of about $|\delta \mathbf{r}^s|\,
@@ -100,16 +100,16 @@ differences are formed and the biases cancel.
 After removing the computed range difference $\Delta\rho$ and an a priori troposphere
 difference $\Delta T_\text{model}$ (Saastamoinen, 70 % humidity), per satellite and band:
 
-$$
+```math
 z_P = \Delta P - \Delta\rho - \Delta T_\text{model}
 = \Delta\text{clk} + m_w\,\Delta\text{ZTD} + \mathbf{m}_g\cdot\Delta\mathbf{G} + \mu_i\,\Delta I + \varepsilon_P
-$$
+```
 
-$$
+```math
 z_\Phi = \Delta\Phi - \Delta\rho - \Delta T_\text{model}
 = \Delta\text{clk} + m_w\,\Delta\text{ZTD} + \mathbf{m}_g\cdot\Delta\mathbf{G} - \mu_i\,\Delta I
 + \lambda_i\,\Delta N_i + \varepsilon_\Phi
-$$
+```
 
 The opposite sign of $\Delta I$ on code and phase separates the ionosphere from the ambiguity.
 The spread of $\mu_i$ across bands separates it from the non-dispersive terms.
@@ -126,10 +126,10 @@ The spread of $\mu_i$ across bands separates it from the non-dispersive terms.
 
 Wet mapping $m_w$ is the Niell function. The gradients use the Chen-Herring mapping
 
-$$
+```math
 m_g(e) = \frac{1}{\sin e \tan e + 0.0032}, \qquad
 \mathbf{m}_g\cdot\Delta\mathbf{G} = m_g(e)\,(\Delta G_N\cos a + \Delta G_E \sin a)
-$$
+```
 
 capped at 10 so that the lowest satellites cannot dominate.
 
@@ -168,10 +168,10 @@ Direct L1/L2 fixing at 50-150 km is not realistic: an L1 ambiguity is 19 cm, so 
 be good to a few centimetres. The way through is to fix long-wavelength combinations first. For
 two bands $a, b$:
 
-$$
+```math
 \lambda_{WL} = \frac{c}{f_a - f_b}, \qquad
 \Phi_{WL} = \frac{f_a\Phi_a - f_b\Phi_b}{f_a - f_b}
-$$
+```
 
 | Step | Example combinations | Wavelength |
 |---|---|---|
@@ -203,11 +203,11 @@ full rate, while the ratio test sees the information the data really holds.
 With the wide-lane integer $N_{WL} = N_a - N_b$ known, the remaining integer can be resolved on
 the ionosphere-free combination, which removes the ionosphere and its baseline-length limit:
 
-$$
+```math
 \Phi_{IF} = \frac{f_a^2\Phi_a - f_b^2\Phi_b}{f_a^2 - f_b^2}
 = \rho + T + \lambda_{NL} N_a + \frac{c f_b}{f_a^2 - f_b^2} N_{WL}, \qquad
 \lambda_{NL} = \frac{c}{f_a + f_b}
-$$
+```
 
 One epoch of $\Phi_{IF}$ is about a third of a narrow-lane cycle, so its float is averaged over
 the arc (at least 120 epochs). It is accepted only when:
@@ -244,16 +244,16 @@ grows by about 0.19 cm per km of master-to-VBS displacement, because a plane can
 curvature. The engine uses **least-squares collocation** instead. With samples $\mathbf{s}$
 (the auxiliaries, plus the master as a sample of value zero):
 
-$$
+```math
 \hat{s}_V = \mathbf{c}_0^\top (\mathbf{C} + \mathbf{N})^{-1}\mathbf{s}, \qquad
 \sigma^2_V = \sigma_f^2 - \mathbf{c}_0^\top (\mathbf{C} + \mathbf{N})^{-1}\mathbf{c}_0
-$$
+```
 
 with an isotropic exponential covariance
 
-$$
+```math
 C(d) = \sigma_f^2\, e^{-d/L}, \qquad \sigma_f = 5\text{ cm}, \quad L = 60\text{ km}
-$$
+```
 
 $\mathbf{C}$ holds the covariance between samples, $\mathbf{c}_0$ the covariance between each
 sample and $V$, and $\mathbf{N}$ the samples' own noise (diagonal, from the filter).
@@ -290,14 +290,14 @@ outside the hull it reaches 6-12. Prediction degrades quickly outside the cluste
 
 The VBS is the master's own observations moved to $V$:
 
-$$
+```math
 \Delta\rho^s = |\mathbf{X}^s - \mathbf{X}_V| - |\mathbf{X}^s - \mathbf{X}_M|
-$$
+```
 
-$$
+```math
 \Phi^s_{V,i} = \Phi^s_{M,i} + \Delta\rho^s + \Delta T^s - \mu_i\,\Delta I^s, \qquad
 P^s_{V,i} = P^s_{M,i} + \Delta\rho^s + \Delta T^s + \mu_i\,\Delta I^s
-$$
+```
 
 with $\Delta I^s$, $\Delta T^s$ the interpolated corrections at $V$, and phase converted to
 cycles by each signal's own wavelength.
@@ -362,11 +362,8 @@ Three detectors, each blind to something the others catch:
   $0.03\text{ m} + 0.004\text{ m/s}\cdot\Delta t$, because the ionosphere moves more between
   30 s epochs than between 1 s epochs. GF is blind to slips like 9:7 cycles on L1:L2, which
   shift it by under a millimetre.
-- **Melbourne-Wübbena**, wide-lane phase minus narrow-lane code:
-  $$
-  MW = \frac{f_a\Phi_a - f_b\Phi_b}{f_a - f_b} - \frac{f_a P_a + f_b P_b}{f_a + f_b}
-  = \lambda_{WL} N_{WL} + \varepsilon
-  $$
+- **Melbourne-Wübbena**, wide-lane phase minus narrow-lane code,
+  $MW = \frac{f_a\Phi_a - f_b\Phi_b}{f_a - f_b} - \frac{f_a P_a + f_b P_b}{f_a + f_b} = \lambda_{WL} N_{WL} + \varepsilon$.
   It cancels geometry, clocks, troposphere and ionosphere, leaving the wide-lane ambiguity. It is
   noisy (code), so it is tested against a running mean: max(1.5 cycles, 4σ). A fixed 5-cycle test
   bridges the warm-up after each slip.
@@ -405,12 +402,33 @@ its sigma stays confident.
 
 ### 7.1 One synthesis per tile
 
-The VBS point is the centre of a fixed global tile of about 15 km. Rows are equal in latitude
-and columns are sized per row. A rover is at most about 10.6 km from its VBS (the half-diagonal),
-which keeps the rover-to-VBS baseline short. Every rover on a tile shares one synthesis, so cost
-scales with occupied tiles, not with users. The tile's RTCM station ID differs from every
-neighbour's: a rover crossing a boundary sees its base change, which is how RTCM signals a new
-reference. A 300 m hysteresis prevents flapping on a boundary.
+The VBS point is the centre of a fixed global tile. Every rover on a tile shares one synthesis,
+so cost scales with occupied tiles, not with users, and the worst rover-to-VBS distance is what
+the tile shape trades against the tile count.
+
+A hexagon is the most compact cell that tiles a plane. With circumradius $R$, it covers
+$\tfrac{3\sqrt3}{2}R^2 \approx 2.60R^2$, while a square with the same worst case (half-diagonal
+$R$) covers $2R^2$. At $R = 10.6$ km that is 292 km² against 225 km²: the same worst-case distance
+with about 23 % fewer tiles. Only three hexagons meet at a vertex (four squares do), and the six
+neighbours are equidistant.
+
+On the sphere the hexagonal grid is built as rows of equal latitude, $1.5R$ apart, with centres
+$\sqrt3 R$ apart along a row and odd rows shifted by half a column. A position belongs to the
+nearest centre, so the cells are the Voronoi cells of that lattice. The column count must shrink
+with $\cos\varphi$ towards the poles. If each row had its own count (about 4 columns fewer per
+row at 48°), the half-column offset between rows would drift around the globe, and wherever it
+reached zero the cells would turn into rectangles. Counts are therefore held constant over bands
+of rows while a cell's width stays within 5 % of nominal. Only the seam between two bands is
+irregular. Measured:
+
+- 97-98 % of cells have six neighbours;
+- 99 % of positions are within 10.0 km of their VBS, and the worst case is 11.4-11.7 km, on seam
+  rows only;
+- the grid needs 21 % fewer tiles than 15 km squares.
+
+The tile's RTCM station ID differs from every neighbour's: a rover crossing a boundary sees its
+base change, which is how RTCM signals a new reference. A 300 m hysteresis, measured past the
+bisector with the new cell, prevents flapping on a boundary.
 
 ### 7.2 Pass-through while converging
 

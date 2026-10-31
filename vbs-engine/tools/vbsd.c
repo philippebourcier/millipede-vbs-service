@@ -26,7 +26,7 @@
  * Usage:
  *   vbsd --cache base_cache.json --coords COORDINATES.json --caster HOST[:PORT]
  *        [--user U --password P] [--listen PORT] [--hysteresis-m 300] [--stale-s 30]
- *        [--idle-s 120] [--check-bands] [--no-backup] [--force] [--exclude-km R]
+ *        [--idle-s 120] [--check-bands] [--no-backup] [--tiles hex|square] [--force] [--exclude-km R]
  *   vbsd --cache base_cache.json --decide LAT LON        # print the decision and exit
  *
  * --force and --exclude-km are for field tests only (docs/vbs/field-test.md), never production.
@@ -1380,10 +1380,11 @@ static int run(struct daemon *d) {
 		return 1;
 	}
 	logmsg("listening on %d (%s); bases from %s:%d; cache %s (%d bases, generated %s); R2s %s; "
-	    "2 + 1 backup %s",
+	    "2 + 1 backup %s; %s tiles",
 	    d->listen_port, d->nallow ? "restricted by --allow" : "open to anyone",
 	    d->caster_host, d->caster_port, d->cache_path, d->bc.n, d->bc.generated,
-	    d->check_bands ? "on" : "off", d->no_backup ? "off" : "on");
+	    d->check_bands ? "on" : "off", d->no_backup ? "off" : "on",
+	    vbs_tile_get_shape() == VBS_TILE_HEX ? "hexagonal" : "square");
 	if (d->force || d->exclude_km > 0.0)
 		logmsg("TEST MODE: force %s, exclude-km %.1f -- for field tests only, never run this "
 		    "in production", d->force ? "on" : "off", d->exclude_km);
@@ -1501,6 +1502,7 @@ static void usage(void) {
 	fprintf(stderr,
 	    "usage: vbsd --cache FILE --caster HOST[:PORT] [--user U --password P] [--listen PORT]\n"
 	    "            [--allow IP[/bits],...] [--hysteresis-m M] [--stale-s S] [--idle-s S]\n"
+	    "            [--tiles hex|square]                 (tile grid; hexagons by default, D172)\n"
 	    "            [--no-check-bands] [--max-aux N] [--min-aux N] [--no-backup]\n"
 	    "            [--force] [--exclude-km R]       (field tests only, never production)\n"
 	    "            [--coords FILE [--coords-max-m M]]\n"
@@ -1550,6 +1552,13 @@ int main(int argc, char **argv) {
 			d.listen_port = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--hysteresis-m") && i + 1 < argc)
 			d.hysteresis_m = atof(argv[++i]);
+		else if (!strcmp(argv[i], "--tiles") && i + 1 < argc) {
+			/* D172: hexagons by default; set before any tile is made */
+			if (vbs_tile_set_shape(vbs_tile_shape_from_str(argv[++i])) < 0) {
+				fprintf(stderr, "vbsd: --tiles takes hex or square, not %s\n", argv[i]);
+				return 1;
+			}
+		}
 		else if (!strcmp(argv[i], "--stale-s") && i + 1 < argc)
 			d.stale_s = atof(argv[++i]);
 		else if (!strcmp(argv[i], "--idle-s") && i + 1 < argc)

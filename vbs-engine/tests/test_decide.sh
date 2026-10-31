@@ -78,6 +78,9 @@ esac
 rc=$?
 [ "$rc" = 2 ] || { echo "FAIL: the daemon started without --coords (exit $rc)"; fail=1; }
 
+# Sections 4 and 5 use a fixture laid out around one SQUARE tile (its distances, such as UA at
+# 22 km from the tile centre, are measured from that tile), so they run with --tiles square.
+# The default grid is hexagonal (D172); check that, and that it serves the same fixture.
 else
 	echo "SKIPPED: checks 1-3 (set VBS_TEST_CACHE to a full network cache)"
 fi
@@ -111,16 +114,26 @@ cat > "$FX/coords.json" <<'JSON'
 "MD":{"x_m":4409946.566,"y_m":484910.025,"z_m":4567673.823,"reference_frame":"F1","calculation_quality":"FINAL"},
 "ME":{"x_m":4369097.401,"y_m":576519.829,"z_m":4596006.283,"reference_frame":"F1","calculation_quality":"FINAL"}}}
 JSON
-out=$("$VBSD" --cache "$FX/cache.json" --coords "$FX/coords.json" --decide 46.0 7.0 2>&1); rc=$?
+out=$("$VBSD" --tiles square --cache "$FX/cache.json" --coords "$FX/coords.json" --decide 46.0 7.0 2>&1); rc=$?
 case "$out" in
 *"R2 SERVE: homogeneous MOSAIC"*) ;;
 *) echo "FAIL: the reserve displaced a Mosaic cluster that serves without it (exit $rc)"; fail=1 ;;
 esac
 
+out=$("$VBSD" --cache "$FX/cache.json" --coords "$FX/coords.json" --decide 46.0 7.0 2>&1); rc=$?
+case "$out" in
+*"tile H"*) ;;
+*) echo "FAIL: the default grid is not hexagonal"; fail=1 ;;
+esac
+case "$out" in
+*"SERVE"*) [ "$rc" = 0 ] || { echo "FAIL: hexagonal tile says SERVE but exits $rc"; fail=1; } ;;
+*) echo "FAIL: the fixture does not serve on its hexagonal tile (exit $rc)"; fail=1 ;;
+esac
+
 # 5. Field-test flags. --exclude-km hides the bases near the tile: UA (22 km) must vanish from
 #    the decision and be reported as hidden. --force serves and says so, and keeps what
 #    production would have answered on the same visible network.
-out=$("$VBSD" --cache "$FX/cache.json" --coords "$FX/coords.json" --exclude-km 25 --decide 46.0 7.0 2>&1)
+out=$("$VBSD" --tiles square --cache "$FX/cache.json" --coords "$FX/coords.json" --exclude-km 25 --decide 46.0 7.0 2>&1)
 case "$out" in
 *"hidden 1 within 25 km: UA "*) ;;
 *) echo "FAIL: --exclude-km 25 does not report UA as hidden"; fail=1 ;;
@@ -128,7 +141,7 @@ esac
 case "$out" in
 *"  UA "*) echo "FAIL: a hidden base appears in the decision"; fail=1 ;;
 esac
-out=$("$VBSD" --cache "$FX/cache.json" --coords "$FX/coords.json" --force --decide 46.0 7.0 2>&1)
+out=$("$VBSD" --tiles square --cache "$FX/cache.json" --coords "$FX/coords.json" --force --decide 46.0 7.0 2>&1)
 for want in "TEST MODE" "SERVE: forced:" "test: production R2 SERVE"; do
 	case "$out" in
 	*"$want"*) ;;

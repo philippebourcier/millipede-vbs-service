@@ -47,11 +47,23 @@ rover --NTRIP--> millipede-caster --(GET /<lat>/<lon>/<alt> + GGA)--> vbsd --NTR
 
 ### 2.1 Tiles
 
-The world is divided once into cells of about 15 km (`VBS_TILE_KM`): rows equal in latitude,
-columns sized per row. A tile is a pure function of position, so two rovers at the same place
-share one synthesis. The RTCM station ID is derived from the tile so that every spatial
-neighbour has a different one. A rover leaving a tile sees its base change, which RTCM signals
-by the station ID changing. Tile changes use a hysteresis (`--hysteresis-m`, default 300 m).
+The world is divided once into fixed cells, and a tile is a pure function of position, so two
+rovers at the same place share one synthesis. Two grids are available (`--tiles`):
+
+- **Hexagons (default).** Circumradius R = 10.6 km. Rows are equal in latitude and 1.5 R
+  apart, centres are √3 R apart along a row, and odd rows are offset by half a column. A position
+  belongs to the nearest centre. To keep rows aligned, column counts are held in latitude bands
+  while a cell's width stays within 5 % of nominal.
+  - For the same worst-case distance as the squares, the grid needs 21 % fewer tiles: 1.79 M
+    against 2.27 M worldwide.
+  - 99 % of positions are within 10.0 km of their VBS; the worst case is 11.4-11.7 km, on the
+    rows where a band changes its column count.
+- **Squares.** 15 km rows equal in latitude, columns sized per row; worst case 10.6 km.
+
+Tile names are `H####C####` (hexagon) or `T####C####` (square). The RTCM station ID is
+derived from the tile so that every spatial neighbour has a different one. A rover leaving a
+tile sees its base change, which RTCM signals by the station ID changing. Tile changes use a
+hysteresis (`--hysteresis-m`, default 300 m), measured past the boundary with the new cell.
 
 ### 2.2 Session life
 
@@ -199,6 +211,7 @@ the example cache.
 ```
 vbsd --cache FILE --coords FILE --caster HOST[:PORT] [--user U --password P]
      [--listen PORT] [--allow IP[/bits],...] [--hysteresis-m M] [--stale-s S] [--idle-s S]
+     [--tiles hex|square]
      [--no-check-bands] [--max-aux N] [--min-aux N] [--no-backup] [--coords-max-m M]
      [--c2w-cal run:SEC|l2c:SEC]
      [--force] [--exclude-km R]          field tests only, never in production
@@ -206,6 +219,7 @@ vbsd --cache FILE [--coords FILE] --decide LAT LON
 ```
 
 - `--caster`: where the physical bases are pulled from.
+- `--tiles`: the tile grid, hexagons by default (§2.1).
 - `--listen` (2102 in the unit file) and `--allow`: only the millipede caster should reach
   `vbsd`; rovers authenticate at the caster.
 - `--force` serves wherever a homogeneous cluster forms, and `--exclude-km` hides the bases near
